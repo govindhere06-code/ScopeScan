@@ -2,7 +2,7 @@
 
 A web platform that runs open-source security scanners (Nuclei, nmap, ffuf) against targets **you are authorized to test**, normalizes their results, and uses a local LLM to triage and explain the findings.
 
-> **Status:** early development — the scope allowlist is built and tested; no scanners are wired in yet. See [Roadmap](#roadmap).
+> **Status:** early development — the scope allowlist and Nuclei scanning work end to end; nmap and ffuf are next. See [Roadmap](#roadmap).
 
 ## Authorized targets only
 
@@ -22,7 +22,7 @@ Scanning systems you don't own or don't have written permission to test is illeg
 
 - [x] **0 · Lab setup** — Docker, Juice Shop, DVWA, nmap, nuclei, ffuf
 - [x] **1 · Project skeleton + scope allowlist**
-- [ ] **2 · Nuclei integration**
+- [x] **2 · Nuclei integration**
 - [ ] **3 · nmap and ffuf behind a shared interface**
 - [ ] **4 · Scan history + background jobs**
 - [ ] **5 · AI triage layer (local LLM)**
@@ -65,10 +65,14 @@ npm test          # scope and security tests
 
 Optional settings go in `server/.env` (see `server/.env.example`). By default the database is stored in `%LOCALAPPDATA%\ScopeScan\scopescan.db`.
 
+Scanning needs [Nuclei](https://github.com/projectdiscovery/nuclei) on your `PATH` (or `NUCLEI_PATH` in `server/.env`). A full scan of Juice Shop takes about 15 minutes; ScopeScan rate-limits Nuclei so the target doesn't fall over.
+
 ## How the scope gate works
 
 - **Default deny.** A target is allowed only if its exact host is on the allowlist and its port is in that entry's scope. "All ports" has to be granted explicitly with `*`.
 - **One canonical form.** `localhost`, `127.0.0.1`, `[::1]`, `127.1`, `2130706433`, `LOCALHOST.` and `local%68ost` are all the same host, so a different spelling can't slip past the check.
 - **Rejected outright:** credentials in the URL, non-http(s) schemes, spaces or control characters, and anything starting with `-` (which a scanner would read as a command-line flag).
-- **Audit log.** Every allowlist change and every decision, allowed or denied, is recorded.
+- **Enforced on the wire, not just at the start.** Scanner templates often reach beyond the target on their own. In a full Nuclei scan of a single allowlisted port, templates tried 20+ other ports on the same host (Spark on 4040, port 80, and so on) and internet hosts such as `interact.sh`, `oast.me`, `checkip.amazonaws.com` and `login.microsoftonline.com`. So every scan runs through a scope proxy that only lets the allowlisted host and port through; everything else is dropped and counted in the scan result. Non-HTTP templates, which open their own connections around any proxy, are not run. The proxy also closes connections that go quiet, so a malformed template request can't hang a scan.
+- **An empty result has to be earned.** If the scanner gives up on the target (for example because it crashed), the scan is marked failed rather than reported as "no findings".
+- **Audit log.** Every allowlist change, every decision (allowed or denied) and every scan is recorded.
 - **The server only obeys its own page.** It listens on `127.0.0.1` only. Requests that change anything must come from the ScopeScan page's origin, carry an `X-ScopeScan` header and be JSON, which blocks CSRF from other websites. Requests with a foreign `Host` header are refused, which blocks DNS rebinding.

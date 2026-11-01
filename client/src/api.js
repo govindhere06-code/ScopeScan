@@ -21,6 +21,7 @@ export const api = {
   addTarget: (entry) => request('/targets', { method: 'POST', body: entry }).then(unwrap),
   removeTarget: (id) => request(`/targets/${id}`, { method: 'DELETE' }).then(unwrap),
   listAudit: () => request('/audit').then(unwrap),
+  runNuclei: (target) => request('/scans/nuclei', { method: 'POST', body: { target } }).then(unwrap),
   // A denial is a normal answer (HTTP 403), not an error.
   checkScope: async (target) => {
     const res = await request('/scope/check', { method: 'POST', body: { target } });

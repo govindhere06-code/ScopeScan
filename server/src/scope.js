@@ -63,7 +63,10 @@ export function parseTarget(input) {
   const host = canonicalHost(url.hostname);
   const port = url.port ? Number(url.port) : DEFAULT_PORTS[url.protocol];
   const scheme = url.protocol.slice(0, -1);
-  return { scheme, host, port, url: `${scheme}://${host}:${port}${url.pathname}${url.search}` };
+  // No trailing "/" for the root: templates build paths as {{BaseURL}}/path, and
+  // "http://host:3000/" would make them request "//path" instead.
+  const pathname = url.pathname === '/' ? '' : url.pathname;
+  return { scheme, host, port, url: `${scheme}://${host}:${port}${pathname}${url.search}` };
 }
 
 // The host field of an allowlist entry: "localhost", or "localhost:3000" as a shortcut.

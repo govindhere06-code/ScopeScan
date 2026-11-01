@@ -48,6 +48,11 @@ export default function App() {
       </section>
 
       <section>
+        <h2>Nuclei scan</h2>
+        <NucleiScan targets={targets} onFinished={refresh} />
+      </section>
+
+      <section>
         <h2>Audit log</h2>
         <AuditLog events={audit} />
       </section>
@@ -183,6 +188,165 @@ function ScopeChecker({ onChecked }) {
           <strong>{result.allowed ? 'Allowed' : 'Refused'}</strong> — {result.reason}
           {result.target && <span className="mono"> ({result.target.url})</span>}
         </p>
+      )}
+    </>
+  );
+}
+
+const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
+const bySeverity = (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity);
+
+function formatDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+function NucleiScan({ targets, onFinished }) {
+  const [target, setTarget] = useState('');
+  const [running, setRunning] = useState(false);
+  const [startedAt, setStartedAt] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(null);
+
+  useEffect(() => {
+    if (!running) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  async function submit(e) {
+    e.preventDefault();
+    setRunning(true);
+    setStartedAt(Date.now());
+    setNow(Date.now());
+    setResult(null);
+    setError(null);
+    setSelected(null);
+    onFinished();
+    try {
+      setResult(await api.runNuclei(target));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRunning(false);
+      onFinished();
+    }
+  }
+
+  const findings = result ? [...result.findings].sort(bySeverity) : [];
+  const counts = SEVERITY_ORDER.map((s) => [s, findings.filter((f) => f.severity === s).length]).filter(([, n]) => n);
+
+  return (
+    <>
+      <form className="row" onSubmit={submit}>
+        <label className="grow">
+          Target
+          <input
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            placeholder="http://localhost:3000"
+            list="allowlisted-targets"
+            disabled={running}
+            required
+          />
+          <datalist id="allowlisted-targets">
+            {targets
+              .filter((t) => t.ports !== '*')
+              .flatMap((t) => t.ports.split(',').map((p) => `http://${t.host}:${p}`))
+              .map((url) => (
+                <option key={url} value={url} />
+              ))}
+          </datalist>
+        </label>
+        <button type="submit" disabled={running}>{running ? 'Scanning…' : 'Run Nuclei'}</button>
+      </form>
+
+      {running && (
+        <p className="banner">
+          Scanning for {formatDuration(now - startedAt)}. A full scan takes 15–25 minutes. Keep this tab
+          open: closing it cancels the scan.
+        </p>
+      )}
+      {error && <p className="banner error">{error}</p>}
+
+      {result && (
+        <>
+          <p className={`banner ${result.status === 'done' ? 'ok' : 'error'}`}>
+            <strong>{result.status === 'done' ? 'Scan complete' : 'Scan failed'}</strong>
+            {result.error && <> — {result.error}</>}
+          </p>
+          <p className="meta">
+            <span className="mono">{result.target.url}</span> · {findings.length} findings
+            {counts.length > 0 && <> ({counts.map(([s, n]) => `${n} ${s}`).join(', ')})</>} ·{' '}
+            {formatDuration(result.durationMs)}
+            {result.versions && (
+              <>
+                {' '}· nuclei {result.versions.nuclei}, templates {result.versions.templates}
+              </>
+            )}
+          </p>
+          {findings.length > 0 && (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>Template</th>
+                    <th>Name</th>
+                    <th>Matcher</th>
+                    <th>Matched at</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {findings.map((f, i) => (
+                    <tr
+                      key={i}
+                      className={`clickable ${selected === i ? 'selected' : ''}`}
+                      onClick={() => setSelected(selected === i ? null : i)}
+                    >
+                      <td>
+                        <span className={`pill sev-${f.severity}`}>{f.severity}</span>
+                      </td>
+                      <td className="mono">{f.templateId}</td>
+                      <td>{f.name}</td>
+                      <td className="mono">{f.matcherName}</td>
+                      <td className="mono">{f.matchedAt}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {result.scope && (
+            <details className="log">
+              <summary>
+                Scope proxy: {result.scope.allowedRequests} requests allowed,{' '}
+                {result.scope.blockedRequests} off-scope requests blocked
+              </summary>
+              {result.scope.blocked.length > 0 ? (
+                <pre className="raw">
+                  {result.scope.blocked.map((b) => `${b.address}  ×${b.count}`).join('\n')}
+                </pre>
+              ) : (
+                <p className="empty">Nothing tried to leave the allowed host and port.</p>
+              )}
+            </details>
+          )}
+          {result.log && (
+            <details className="log">
+              <summary>nuclei log</summary>
+              <pre className="raw">{result.log}</pre>
+            </details>
+          )}
+          {selected !== null && (
+            <>
+              <p className="meta">Raw nuclei output for {findings[selected].templateId} (click the row again to close):</p>
+              <pre className="raw">{JSON.stringify(findings[selected].raw, null, 2)}</pre>
+            </>
+          )}
+        </>
       )}
     </>
   );

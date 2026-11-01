@@ -28,6 +28,17 @@ describe('parseTarget: different spellings of the same target are the same', () 
   }
 });
 
+describe('parseTarget: canonical URL', () => {
+  const cases = [
+    ['localhost:3000', 'http://127.0.0.1:3000'],
+    ['http://localhost:3000/', 'http://127.0.0.1:3000'],
+    ['http://localhost:3000/login?next=/', 'http://127.0.0.1:3000/login?next=/'],
+  ];
+  for (const [input, url] of cases) {
+    it(`${input} -> ${url}`, () => assert.equal(parseTarget(input).url, url));
+  }
+});
+
 describe('parseTarget: rejects bad or dangerous input', () => {
   const cases = [
     '',

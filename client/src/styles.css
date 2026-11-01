@@ -9,6 +9,10 @@
   --ok-text: #1e6b34;
   --err-bg: #fbeaea;
   --err-text: #a12a2a;
+  --warn-bg: #fdf1dc;
+  --warn-text: #8a5300;
+  --low-bg: #e6eefb;
+  --low-text: #2d4f93;
   --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
   color-scheme: light;
 }
@@ -25,6 +29,10 @@
     --ok-text: #8fd6a2;
     --err-bg: #3a1c1c;
     --err-text: #f0a3a3;
+    --warn-bg: #3b2c12;
+    --warn-text: #f2c27a;
+    --low-bg: #1b2a45;
+    --low-text: #a9c1f2;
     color-scheme: dark;
   }
 }
@@ -198,13 +206,82 @@ th {
 }
 
 .pill.allowed,
-.pill.added {
+.pill.added,
+.pill.done {
   background: var(--ok-bg);
   color: var(--ok-text);
 }
 
 .pill.denied,
-.pill.removed {
+.pill.removed,
+.pill.failed {
   background: var(--err-bg);
   color: var(--err-text);
+}
+
+.pill.sev-critical {
+  background: #7a1010;
+  color: #fff;
+}
+
+.pill.sev-high {
+  background: var(--err-bg);
+  color: var(--err-text);
+}
+
+.pill.sev-medium {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.pill.sev-low {
+  background: var(--low-bg);
+  color: var(--low-text);
+}
+
+.meta {
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.banner + .meta {
+  margin-top: 8px;
+}
+
+.banner:not(.ok):not(.error) {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.clickable:hover,
+tr.selected {
+  background: var(--bg);
+}
+
+details.log {
+  margin: 12px 0;
+}
+
+details.log summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+pre.raw {
+  margin: 0;
+  padding: 12px;
+  max-height: 420px;
+  overflow: auto;
+  font: 12px/1.45 var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
