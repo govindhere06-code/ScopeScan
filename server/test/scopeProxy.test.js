@@ -118,7 +118,59 @@ describe('scope proxy', () => {
     silent.close();
     assert.ok(res.status === 502 || res.status === 'dropped', `got ${res.status}`);
     assert.ok(elapsed < 2000, `took ${elapsed}ms`);
-    assert.ok(stats.timedOutConnections >= 1);
+    assert.equal(stats.targetTimeouts, 1);
+    assert.deepEqual(stats.timedOut, [{ request: 'GET /', count: 1 }]);
+  });
+
+  it('counts allowed requests the target never answered', async () => {
+    // Nothing listens on this port, so every forwarded request fails.
+    const dead = net.createServer();
+    await new Promise((resolve) => dead.listen(0, '127.0.0.1', resolve));
+    const port = dead.address().port;
+    await new Promise((resolve) => dead.close(resolve));
+    const deadProxy = await startScopeProxy({ host: '127.0.0.1', port });
+    const res = await new Promise((resolve) => {
+      const req = http.request(
+        { host: '127.0.0.1', port: Number(new URL(deadProxy.url).port), path: `http://127.0.0.1:${port}/`, agent: false },
+        (r) => resolve(r.statusCode),
+      );
+      req.on('error', () => resolve('dropped'));
+      req.end();
+    });
+    const stats = deadProxy.stats();
+    await deadProxy.close();
+    assert.equal(res, 502);
+    assert.deepEqual([stats.allowedRequests, stats.upstreamErrors], [1, 1]);
+  });
+
+  it('does not pass connection headers on to the target', async () => {
+    const seen = [];
+    const echo = http.createServer((req, res) => {
+      seen.push(req.headers);
+      res.end('ok');
+    });
+    await new Promise((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    const port = echo.address().port;
+    const echoProxy = await startScopeProxy({ host: '127.0.0.1', port });
+    await new Promise((resolve) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: Number(new URL(echoProxy.url).port),
+          path: `http://127.0.0.1:${port}/`,
+          headers: { Connection: 'keep-alive, X-Secret-Hop', 'Keep-Alive': 'timeout=60', 'X-Secret-Hop': '1', 'X-Kept': 'yes' },
+          agent: false,
+        },
+        (r) => r.resume().on('end', resolve),
+      );
+      req.end();
+    });
+    await echoProxy.close();
+    echo.close();
+    assert.equal(seen[0]['keep-alive'], undefined);
+    assert.equal(seen[0]['x-secret-hop'], undefined);
+    assert.notEqual(seen[0].connection, 'keep-alive');
+    assert.equal(seen[0]['x-kept'], 'yes');
   });
 
   it('counts what it allowed and blocked', () => {

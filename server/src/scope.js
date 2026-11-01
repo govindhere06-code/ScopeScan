@@ -107,5 +107,5 @@ export function checkScope(target, entries) {
       reason: `port ${target.port} is not in scope for ${target.host} (allowed: ${entry.ports})`,
     };
   }
-  return { allowed: true, reason: `matches allowlist entry #${entry.id}`, entryId: entry.id };
+  return { allowed: true, reason: `matches allowlist entry #${entry.id}`, entryId: entry.id, ports: entry.ports };
 }

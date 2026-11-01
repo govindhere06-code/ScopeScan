@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process';
 import { startScopeProxy } from '../scopeProxy.js';
+import { finding } from './findings.js';
+import { logTail, notFound, run } from './run.js';
 
 // Every flag here was checked against `nuclei -h` (v3.11.1).
 const SCAN_FLAGS = [
@@ -18,42 +19,15 @@ const SCAN_FLAGS = [
 ];
 
 const SKIPPED_RE = /Skipped (\S+) from target list as found unresponsive/g;
-const ANSI_RE = /\x1b\[[0-9;]*m/g;
-const LOG_TAIL_LINES = 40;
 
 export function nucleiBinary() {
   return process.env.NUCLEI_PATH || 'nuclei';
 }
 
-// The URL is its own array element right after -u, so it can never be read as a flag,
-// and nothing goes through a shell. All traffic goes through the scope proxy.
+// The URL is its own array element right after -u, so it can never be read as a flag.
+// All traffic goes through the scope proxy.
 export function buildScanArgs(url, proxyUrl) {
   return ['-u', url, '-proxy', proxyUrl, ...SCAN_FLAGS];
-}
-
-// Runs a binary without a shell and collects its output. Aborting the signal kills it.
-function run(bin, args, { signal } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    let aborted = false;
-    const onAbort = () => {
-      aborted = true;
-      child.kill();
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    child.stdout.setEncoding('utf8').on('data', (chunk) => (stdout += chunk));
-    child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr += chunk));
-    child.on('error', (err) => {
-      signal?.removeEventListener('abort', onAbort);
-      reject(err);
-    });
-    child.on('close', (code) => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve({ code, stdout, stderr: stderr.replace(ANSI_RE, ''), aborted });
-    });
-  });
 }
 
 export function parseFindings(stdout) {
@@ -62,15 +36,20 @@ export function parseFindings(stdout) {
     .map((line) => line.trim())
     .filter((line) => line.startsWith('{'))
     .map((line) => JSON.parse(line))
-    .map((raw) => ({
-      templateId: raw['template-id'],
-      name: raw.info?.name ?? raw['template-id'],
-      severity: raw.info?.severity ?? 'unknown',
-      matcherName: raw['matcher-name'] ?? null,
-      matchedAt: raw['matched-at'] ?? raw.host,
-      extracted: raw['extracted-results'] ?? [],
-      raw,
-    }));
+    .map((raw) => {
+      const extracted = raw['extracted-results'] ?? [];
+      const evidence = [raw['matcher-name'], ...extracted].filter(Boolean).join(', ');
+      return finding({
+        tool: 'nuclei',
+        type: 'template-match',
+        severity: raw.info?.severity ?? 'unknown',
+        title: raw.info?.name ?? raw['template-id'],
+        location: raw['matched-at'] ?? raw.host,
+        detail: evidence || null,
+        ref: raw['template-id'],
+        raw,
+      });
+    });
 }
 
 // "0 findings" only counts as a clean result if nuclei actually scanned the target.
@@ -83,42 +62,31 @@ export function interpretRun({ code, stdout, stderr, aborted }, target) {
   else if (skipped.includes(`${target.host}:${target.port}`)) {
     error = 'the target stopped responding and nuclei skipped it, so these results are incomplete';
   } else if (code !== 0) error = `nuclei exited with code ${code}`;
-  // nuclei's own log, so a failed scan can be explained without re-running it.
-  const log = stderr.trim().split('\n').slice(-LOG_TAIL_LINES).join('\n');
-  return { status: error ? 'failed' : 'done', error, findings, log };
+  return { status: error ? 'failed' : 'done', error, findings, log: logTail(stderr) };
 }
 
-async function getVersions(signal) {
+async function getVersion(signal) {
   const bin = nucleiBinary();
   const [engine, templates] = await Promise.all([
     run(bin, ['-version', '-duc'], { signal }),
     run(bin, ['-tv', '-duc'], { signal }),
   ]);
-  return {
-    nuclei: (engine.stdout + engine.stderr).match(/Engine Version: (v[\w.-]+)/)?.[1] ?? 'unknown',
-    templates: (templates.stdout + templates.stderr).match(/templates version: (v[\w.-]+)/)?.[1] ?? 'unknown',
-  };
+  const engineVersion = (engine.stdout + engine.stderr).match(/Engine Version: (v[\w.-]+)/)?.[1] ?? 'unknown';
+  const templatesVersion = (templates.stdout + templates.stderr).match(/templates version: (v[\w.-]+)/)?.[1] ?? 'unknown';
+  return `${engineVersion}, templates ${templatesVersion}`;
 }
 
 // `target` is the canonical target returned by isAllowed(): { url, host, port }.
-export async function runNucleiScan(target, { signal } = {}) {
+export async function runNucleiScan({ target }, { signal } = {}) {
   const started = Date.now();
   const proxy = await startScopeProxy(target);
   try {
-    const versions = await getVersions(signal);
+    const version = await getVersion(signal);
     const result = interpretRun(await run(nucleiBinary(), buildScanArgs(target.url, proxy.url), { signal }), target);
-    return { ...result, versions, scope: proxy.stats(), durationMs: Date.now() - started };
+    return { ...result, version, scope: proxy.stats(), durationMs: Date.now() - started };
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
-    return {
-      status: 'failed',
-      error: 'nuclei was not found: put it on PATH or set NUCLEI_PATH in server/.env',
-      findings: [],
-      log: '',
-      versions: null,
-      scope: proxy.stats(),
-      durationMs: Date.now() - started,
-    };
+    return { ...notFound('nuclei', 'NUCLEI_PATH', started), scope: proxy.stats() };
   } finally {
     await proxy.close();
   }

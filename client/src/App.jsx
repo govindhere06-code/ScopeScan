@@ -48,8 +48,8 @@ export default function App() {
       </section>
 
       <section>
-        <h2>Nuclei scan</h2>
-        <NucleiScan targets={targets} onFinished={refresh} />
+        <h2>Scan</h2>
+        <ScanPanel targets={targets} onFinished={refresh} />
       </section>
 
       <section>
@@ -194,27 +194,44 @@ function ScopeChecker({ onChecked }) {
 }
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
-const bySeverity = (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity);
+const TOOLS = [
+  { id: 'nmap', label: 'nmap', hint: 'open ports and services (seconds)' },
+  { id: 'ffuf', label: 'ffuf', hint: 'hidden paths (about 3 minutes)' },
+  { id: 'nuclei', label: 'Nuclei', hint: 'known issues (about 15 minutes)' },
+];
 
 function formatDuration(ms) {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 }
 
-function NucleiScan({ targets, onFinished }) {
+function bySeverityThenTool(a, b) {
+  return (
+    SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
+    TOOLS.findIndex((t) => t.id === a.tool) - TOOLS.findIndex((t) => t.id === b.tool)
+  );
+}
+
+function ScanPanel({ targets, onFinished }) {
   const [target, setTarget] = useState('');
+  const [tools, setTools] = useState(['nmap', 'ffuf']);
   const [running, setRunning] = useState(false);
   const [startedAt, setStartedAt] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [toolFilter, setToolFilter] = useState('all');
 
   useEffect(() => {
     if (!running) return undefined;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [running]);
+
+  function toggleTool(id) {
+    setTools((current) => (current.includes(id) ? current.filter((t) => t !== id) : [...current, id]));
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -224,9 +241,10 @@ function NucleiScan({ targets, onFinished }) {
     setResult(null);
     setError(null);
     setSelected(null);
+    setToolFilter('all');
     onFinished();
     try {
-      setResult(await api.runNuclei(target));
+      setResult(await api.runScan(target, tools));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -235,8 +253,8 @@ function NucleiScan({ targets, onFinished }) {
     }
   }
 
-  const findings = result ? [...result.findings].sort(bySeverity) : [];
-  const counts = SEVERITY_ORDER.map((s) => [s, findings.filter((f) => f.severity === s).length]).filter(([, n]) => n);
+  const allFindings = result ? result.results.flatMap((r) => r.findings).sort(bySeverityThenTool) : [];
+  const findings = toolFilter === 'all' ? allFindings : allFindings.filter((f) => f.tool === toolFilter);
 
   return (
     <>
@@ -260,95 +278,149 @@ function NucleiScan({ targets, onFinished }) {
               ))}
           </datalist>
         </label>
-        <button type="submit" disabled={running}>{running ? 'Scanning…' : 'Run Nuclei'}</button>
+        <fieldset className="tools" disabled={running}>
+          <legend>Tools</legend>
+          {TOOLS.map((t) => (
+            <label key={t.id} className="check" title={t.hint}>
+              <input type="checkbox" checked={tools.includes(t.id)} onChange={() => toggleTool(t.id)} />
+              {t.label}
+            </label>
+          ))}
+        </fieldset>
+        <button type="submit" disabled={running || tools.length === 0}>
+          {running ? 'Scanning…' : 'Run scan'}
+        </button>
       </form>
 
       {running && (
         <p className="banner">
-          Scanning for {formatDuration(now - startedAt)}. A full scan takes 15–25 minutes. Keep this tab
-          open: closing it cancels the scan.
+          Scanning for {formatDuration(now - startedAt)}. Tools run one at a time: nmap takes seconds, ffuf about 3
+          minutes, Nuclei about 15. Keep this tab open: closing it cancels the scan.
         </p>
       )}
       {error && <p className="banner error">{error}</p>}
 
       {result && (
         <>
-          <p className={`banner ${result.status === 'done' ? 'ok' : 'error'}`}>
-            <strong>{result.status === 'done' ? 'Scan complete' : 'Scan failed'}</strong>
-            {result.error && <> — {result.error}</>}
-          </p>
           <p className="meta">
-            <span className="mono">{result.target.url}</span> · {findings.length} findings
-            {counts.length > 0 && <> ({counts.map(([s, n]) => `${n} ${s}`).join(', ')})</>} ·{' '}
-            {formatDuration(result.durationMs)}
-            {result.versions && (
-              <>
-                {' '}· nuclei {result.versions.nuclei}, templates {result.versions.templates}
-              </>
-            )}
+            <span className="mono">{result.target.url}</span> · ports in scope:{' '}
+            <span className="mono">{result.ports === '*' ? 'all' : result.ports}</span>
           </p>
-          {findings.length > 0 && (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Severity</th>
-                    <th>Template</th>
-                    <th>Name</th>
-                    <th>Matcher</th>
-                    <th>Matched at</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {findings.map((f, i) => (
-                    <tr
-                      key={i}
-                      className={`clickable ${selected === i ? 'selected' : ''}`}
-                      onClick={() => setSelected(selected === i ? null : i)}
-                    >
-                      <td>
-                        <span className={`pill sev-${f.severity}`}>{f.severity}</span>
-                      </td>
-                      <td className="mono">{f.templateId}</td>
-                      <td>{f.name}</td>
-                      <td className="mono">{f.matcherName}</td>
-                      <td className="mono">{f.matchedAt}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {result.scope && (
-            <details className="log">
-              <summary>
-                Scope proxy: {result.scope.allowedRequests} requests allowed,{' '}
-                {result.scope.blockedRequests} off-scope requests blocked
-              </summary>
-              {result.scope.blocked.length > 0 ? (
-                <pre className="raw">
-                  {result.scope.blocked.map((b) => `${b.address}  ×${b.count}`).join('\n')}
-                </pre>
-              ) : (
-                <p className="empty">Nothing tried to leave the allowed host and port.</p>
-              )}
-            </details>
-          )}
-          {result.log && (
-            <details className="log">
-              <summary>nuclei log</summary>
-              <pre className="raw">{result.log}</pre>
-            </details>
-          )}
-          {selected !== null && (
+          <div className="tool-results">
+            {result.results.map((r) => (
+              <ToolResult key={r.tool} result={r} />
+            ))}
+          </div>
+
+          {allFindings.length > 0 && (
             <>
-              <p className="meta">Raw nuclei output for {findings[selected].templateId} (click the row again to close):</p>
-              <pre className="raw">{JSON.stringify(findings[selected].raw, null, 2)}</pre>
+              <div className="row filter">
+                <span className="meta">Show:</span>
+                {['all', ...result.results.map((r) => r.tool)].map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`chip ${toolFilter === t ? 'active' : ''}`}
+                    onClick={() => {
+                      setToolFilter(t);
+                      setSelected(null);
+                    }}
+                  >
+                    {t === 'all' ? `all (${allFindings.length})` : `${t} (${allFindings.filter((f) => f.tool === t).length})`}
+                  </button>
+                ))}
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>Tool</th>
+                      <th>Finding</th>
+                      <th>Location</th>
+                      <th>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {findings.map((f, i) => (
+                      <tr
+                        key={i}
+                        className={`clickable ${selected === i ? 'selected' : ''}`}
+                        onClick={() => setSelected(selected === i ? null : i)}
+                      >
+                        <td>
+                          <span className={`pill sev-${f.severity}`}>{f.severity}</span>
+                        </td>
+                        <td className="mono">{f.tool}</td>
+                        <td>{f.title}</td>
+                        <td className="mono">{f.location}</td>
+                        <td className="detail">{f.detail}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {selected !== null && findings[selected] && (
+                <>
+                  <p className="meta">
+                    Raw {findings[selected].tool} output for {findings[selected].title} (click the row again to close):
+                  </p>
+                  <pre className="raw">{JSON.stringify(findings[selected].raw, null, 2)}</pre>
+                </>
+              )}
             </>
           )}
         </>
       )}
     </>
+  );
+}
+
+function ToolResult({ result }) {
+  const ok = result.status === 'done';
+  const counts = SEVERITY_ORDER.map((s) => [s, result.findings.filter((f) => f.severity === s).length]).filter(
+    ([, n]) => n,
+  );
+  return (
+    <div className={`tool-result ${ok ? 'ok' : 'error'}`}>
+      <p className="tool-head">
+        <strong>{result.tool}</strong> <span className={`pill ${result.status}`}>{result.status}</span>{' '}
+        <span className="meta">
+          {result.findings.length} findings
+          {counts.length > 0 && <> ({counts.map(([s, n]) => `${n} ${s}`).join(', ')})</>} ·{' '}
+          {formatDuration(result.durationMs)}
+          {result.version && <> · {result.version}</>}
+        </span>
+      </p>
+      {result.error && <p className="form-error">{result.error}</p>}
+      {result.scope && (
+        <details className="log">
+          <summary>
+            Scope proxy: {result.scope.allowedRequests} requests allowed, {result.scope.blockedRequests} off-scope
+            requests blocked
+          </summary>
+          {result.scope.blocked.length > 0 ? (
+            <pre className="raw">{result.scope.blocked.map((b) => `${b.address}  ×${b.count}`).join('\n')}</pre>
+          ) : (
+            <p className="empty">Nothing tried to leave the allowed host and port.</p>
+          )}
+          {result.scope.targetTimeouts > 0 && (
+            <>
+              <p className="meta">
+                {result.scope.targetTimeouts} requests went unanswered for 30 seconds and were cut off:
+              </p>
+              <pre className="raw">{result.scope.timedOut.map((t) => `${t.request}  ×${t.count}`).join('\n')}</pre>
+            </>
+          )}
+        </details>
+      )}
+      {result.log && (
+        <details className="log">
+          <summary>{result.tool} log</summary>
+          <pre className="raw">{result.log}</pre>
+        </details>
+      )}
+    </div>
   );
 }
 

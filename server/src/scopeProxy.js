@@ -12,6 +12,17 @@ const MAX_BLOCKED_LISTED = 50;
 // doesn't end them, so the proxy closes any connection that goes quiet for this long.
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 
+// Headers that describe one connection, not the request. A proxy must not pass them on:
+// forwarding the scanner's "Connection: keep-alive" would hold target connections open.
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'te', 'trailer', 'upgrade'];
+
+function withoutHopByHop(headers) {
+  const out = { ...headers };
+  const listed = String(headers.connection ?? '').split(',').map((h) => h.trim().toLowerCase());
+  for (const name of [...HOP_BY_HOP, ...listed]) delete out[name];
+  return out;
+}
+
 function isInScope(address, allowed) {
   try {
     const t = parseTarget(address);
@@ -30,13 +41,28 @@ export function startScopeProxy(allowed, { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_
   const blocked = new Map();
   let allowedRequests = 0;
   let blockedRequests = 0;
-  let timedOut = 0;
+  // Allowed requests the target never answered (connection failed, or went quiet): lets a
+  // scanner that exits "successfully" against a dead target be caught.
+  let upstreamErrors = 0;
+  let targetTimeouts = 0;
+  const timedOut = new Map();
 
-  // Every socket, on both sides, is closed after `idleTimeoutMs` without traffic.
-  function track(socket) {
+  // Counts occurrences per key, keeping at most MAX_BLOCKED_LISTED distinct keys.
+  function tally(map, key) {
+    const k = String(key).slice(0, 200);
+    if (map.has(k) || map.size < MAX_BLOCKED_LISTED) map.set(k, (map.get(k) ?? 0) + 1);
+  }
+
+  // Every socket, on both sides, is closed after `idleTimeoutMs` without traffic. Only a
+  // quiet connection to the target counts as a timeout (an idle scanner connection is
+  // normal), and it's recorded by the request it was carrying.
+  function track(socket, { toTarget = false, label = '' } = {}) {
     sockets.add(socket);
     socket.setTimeout(idleTimeoutMs, () => {
-      timedOut += 1;
+      if (toTarget) {
+        targetTimeouts += 1;
+        tally(timedOut, label);
+      }
       socket.destroy();
     });
     socket.on('close', () => sockets.delete(socket));
@@ -44,8 +70,7 @@ export function startScopeProxy(allowed, { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_
 
   function block(address) {
     blockedRequests += 1;
-    const key = String(address).slice(0, 200);
-    if (blocked.has(key) || blocked.size < MAX_BLOCKED_LISTED) blocked.set(key, (blocked.get(key) ?? 0) + 1);
+    tally(blocked, address);
   }
 
   // Plain http: the client sends the full URL ("GET http://host:port/path").
@@ -63,19 +88,27 @@ export function startScopeProxy(allowed, { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_
       return req.socket.destroy();
     }
     allowedRequests += 1;
-    const headers = { ...req.headers };
-    delete headers['proxy-connection'];
-    delete headers['proxy-authorization'];
     const upstream = http.request(
-      // A fresh connection per request (no pooling), so every upstream socket gets the idle timeout.
-      { host: upstreamHost, port: allowed.port, method: req.method, path: url.pathname + url.search, headers, agent: false },
+      // A fresh connection per request (no pooling), closed once the response is done.
+      {
+        host: upstreamHost,
+        port: allowed.port,
+        method: req.method,
+        path: url.pathname + url.search,
+        headers: withoutHopByHop(req.headers),
+        agent: false,
+      },
       (up) => {
-        res.writeHead(up.statusCode, up.statusMessage, up.headers);
+        res.writeHead(up.statusCode, up.statusMessage, withoutHopByHop(up.headers));
         up.pipe(res);
       },
     );
-    upstream.on('socket', track);
-    upstream.on('error', () => (res.headersSent ? res.destroy() : res.writeHead(502).end()));
+    upstream.on('socket', (socket) => track(socket, { toTarget: true, label: `${req.method} ${url.pathname}` }));
+    upstream.on('error', () => {
+      upstreamErrors += 1;
+      if (res.headersSent) res.destroy();
+      else res.writeHead(502).end();
+    });
     // If the scanner gives up on a request, stop waiting on the target too.
     res.on('close', () => {
       if (!res.writableFinished) upstream.destroy();
@@ -96,8 +129,11 @@ export function startScopeProxy(allowed, { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_
       upstream.pipe(clientSocket);
       clientSocket.pipe(upstream);
     });
-    track(upstream);
-    upstream.on('error', () => clientSocket.destroy());
+    track(upstream, { toTarget: true, label: `CONNECT ${req.url}` });
+    upstream.on('error', () => {
+      upstreamErrors += 1;
+      clientSocket.destroy();
+    });
     clientSocket.on('error', () => upstream.destroy());
   });
 
@@ -112,8 +148,10 @@ export function startScopeProxy(allowed, { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_
         stats: () => ({
           allowedRequests,
           blockedRequests,
-          timedOutConnections: timedOut,
+          upstreamErrors,
+          targetTimeouts,
           blocked: [...blocked].map(([address, count]) => ({ address, count })).sort((a, b) => b.count - a.count),
+          timedOut: [...timedOut].map(([request, count]) => ({ request, count })).sort((a, b) => b.count - a.count),
         }),
         close: () =>
           new Promise((done) => {

@@ -3,10 +3,24 @@ import { addTarget, isAllowed, listTargets, removeTarget } from './allowlist.js'
 import { listEvents, logEvent } from './audit.js';
 import { ScopeError } from './scope.js';
 import { requireLocalHost, requireSameSite } from './security.js';
+import { runFfufScan } from './tools/ffuf.js';
+import { runNmapScan } from './tools/nmap.js';
 import { runNucleiScan } from './tools/nuclei.js';
 
-// `scanner` is swappable so tests can check the gate without launching real scans.
-export function createApp({ db, allowedOrigins, scanner = { runNuclei: runNucleiScan } }) {
+const DEFAULT_SCANNERS = { nmap: runNmapScan, ffuf: runFfufScan, nuclei: runNucleiScan };
+// Quickest first, so the slow nuclei scan doesn't hold up the other results.
+const TOOL_ORDER = ['nmap', 'ffuf', 'nuclei'];
+
+function parseTools(input) {
+  if (!Array.isArray(input) || input.length === 0) throw new ScopeError(`pick at least one tool: ${TOOL_ORDER.join(', ')}`);
+  for (const tool of input) {
+    if (!TOOL_ORDER.includes(tool)) throw new ScopeError(`unknown tool: ${String(tool).slice(0, 40)}`);
+  }
+  return TOOL_ORDER.filter((tool) => input.includes(tool));
+}
+
+// `scanners` is swappable so tests can check the gate without launching real scans.
+export function createApp({ db, allowedOrigins, scanners = DEFAULT_SCANNERS }) {
   const app = express();
   let scanRunning = false;
   app.disable('x-powered-by');
@@ -36,32 +50,39 @@ export function createApp({ db, allowedOrigins, scanner = { runNuclei: runNuclei
     res.status(result.allowed ? 200 : 403).json(result);
   });
 
-  // Runs nuclei and holds the request open until it finishes (15-25 minutes for a full
-  // scan). Ticket 4 replaces this with background jobs.
-  app.post('/api/scans/nuclei', async (req, res) => {
+  // Runs the chosen tools one after another and holds the request open until all finish
+  // (a full nuclei scan alone takes about 15 minutes). Ticket 4 replaces this with background jobs.
+  app.post('/api/scans', async (req, res) => {
+    const tools = parseTools(req.body?.tools);
     const scope = isAllowed(db, req.body?.target);
     if (!scope.allowed) return res.status(403).json({ error: `refused: ${scope.reason}` });
     // One at a time: two parallel scans are enough to knock Juice Shop over.
     if (scanRunning) return res.status(409).json({ error: 'a scan is already running; wait for it to finish' });
 
     scanRunning = true;
-    const { target } = scope;
+    const { target, ports } = scope;
     const controller = new AbortController();
-    // Closing the page closes the connection; don't leave nuclei running unattended.
+    // Closing the page closes the connection; don't leave a scanner running unattended.
     res.on('close', () => {
       if (!res.writableFinished) controller.abort();
     });
-    const audit = { action: 'scan_nuclei', input: target.url, host: target.host, port: target.port };
-    logEvent(db, { ...audit, decision: 'started' });
+    const results = [];
     try {
-      const result = await scanner.runNuclei(target, { signal: controller.signal });
-      const summary = `${result.findings.length} findings, ${result.scope?.blockedRequests ?? 0} off-scope requests blocked`;
-      logEvent(db, {
-        ...audit,
-        decision: result.status,
-        reason: result.error ? `${result.error} (${summary})` : summary,
-      });
-      if (!controller.signal.aborted) res.json({ target, ...result });
+      for (const tool of tools) {
+        if (controller.signal.aborted) break;
+        const audit = { action: `scan_${tool}`, input: target.url, host: target.host, port: target.port };
+        logEvent(db, { ...audit, decision: 'started' });
+        const result = await scanners[tool]({ target, ports }, { signal: controller.signal });
+        const blocked = result.scope ? `, ${result.scope.blockedRequests} off-scope requests blocked` : '';
+        const summary = `${result.findings.length} findings${blocked}`;
+        logEvent(db, {
+          ...audit,
+          decision: result.status,
+          reason: result.error ? `${result.error} (${summary})` : summary,
+        });
+        results.push({ tool, ...result });
+      }
+      if (!controller.signal.aborted) res.json({ target, ports, results });
     } finally {
       scanRunning = false;
     }

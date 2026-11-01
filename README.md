@@ -2,7 +2,7 @@
 
 A web platform that runs open-source security scanners (Nuclei, nmap, ffuf) against targets **you are authorized to test**, normalizes their results, and uses a local LLM to triage and explain the findings.
 
-> **Status:** early development — the scope allowlist and Nuclei scanning work end to end; nmap and ffuf are next. See [Roadmap](#roadmap).
+> **Status:** early development — scope allowlist plus nmap, ffuf and Nuclei scanning work end to end; scan history and background jobs are next. See [Roadmap](#roadmap).
 
 ## Authorized targets only
 
@@ -23,7 +23,7 @@ Scanning systems you don't own or don't have written permission to test is illeg
 - [x] **0 · Lab setup** — Docker, Juice Shop, DVWA, nmap, nuclei, ffuf
 - [x] **1 · Project skeleton + scope allowlist**
 - [x] **2 · Nuclei integration**
-- [ ] **3 · nmap and ffuf behind a shared interface**
+- [x] **3 · nmap and ffuf behind a shared interface**
 - [ ] **4 · Scan history + background jobs**
 - [ ] **5 · AI triage layer (local LLM)**
 - [ ] **6 · Report generation + polish**
@@ -65,7 +65,9 @@ npm test          # scope and security tests
 
 Optional settings go in `server/.env` (see `server/.env.example`). By default the database is stored in `%LOCALAPPDATA%\ScopeScan\scopescan.db`.
 
-Scanning needs [Nuclei](https://github.com/projectdiscovery/nuclei) on your `PATH` (or `NUCLEI_PATH` in `server/.env`). A full scan of Juice Shop takes about 15 minutes; ScopeScan rate-limits Nuclei so the target doesn't fall over.
+Scanning needs the tools themselves: [nmap](https://nmap.org), [ffuf](https://github.com/ffuf/ffuf) and [Nuclei](https://github.com/projectdiscovery/nuclei), on your `PATH` or set in `server/.env`. ffuf also needs a wordlist (`FFUF_WORDLIST`). Against Juice Shop, nmap takes seconds, ffuf about 3 minutes and Nuclei about 15; ScopeScan rate-limits the web scanners so the target doesn't fall over.
+
+Every tool's output is converted into one finding format (`tool`, `type`, `severity`, `title`, `location`, `detail`, `ref`, plus the tool's raw record), so the rest of ScopeScan doesn't need to know which tool found what.
 
 ## How the scope gate works
 
@@ -73,6 +75,7 @@ Scanning needs [Nuclei](https://github.com/projectdiscovery/nuclei) on your `PAT
 - **One canonical form.** `localhost`, `127.0.0.1`, `[::1]`, `127.1`, `2130706433`, `LOCALHOST.` and `local%68ost` are all the same host, so a different spelling can't slip past the check.
 - **Rejected outright:** credentials in the URL, non-http(s) schemes, spaces or control characters, and anything starting with `-` (which a scanner would read as a command-line flag).
 - **Enforced on the wire, not just at the start.** Scanner templates often reach beyond the target on their own. In a full Nuclei scan of a single allowlisted port, templates tried 20+ other ports on the same host (Spark on 4040, port 80, and so on) and internet hosts such as `interact.sh`, `oast.me`, `checkip.amazonaws.com` and `login.microsoftonline.com`. So every scan runs through a scope proxy that only lets the allowlisted host and port through; everything else is dropped and counted in the scan result. Non-HTTP templates, which open their own connections around any proxy, are not run. The proxy also closes connections that go quiet, so a malformed template request can't hang a scan.
-- **An empty result has to be earned.** If the scanner gives up on the target (for example because it crashed), the scan is marked failed rather than reported as "no findings".
+- **nmap is scoped by its arguments.** It opens raw connections, so it can't use the proxy. It only gets the ports listed in the allowlist entry (`-p`), never does DNS lookups (`-n`) or pings (`-Pn`), and an entry that grants all ports scans the 1,000 most common ones, not 65,535. Service names nmap merely guessed from the port number are shown as guesses, with nmap's confidence.
+- **An empty result has to be earned.** If a scanner gives up on the target (for example because it crashed), the scan is marked failed rather than reported as "no findings". ffuf exits successfully even against a dead target, so for ffuf the proxy's count of unanswered requests decides.
 - **Audit log.** Every allowlist change, every decision (allowed or denied) and every scan is recorded.
 - **The server only obeys its own page.** It listens on `127.0.0.1` only. Requests that change anything must come from the ScopeScan page's origin, carry an `X-ScopeScan` header and be JSON, which blocks CSRF from other websites. Requests with a foreign `Host` header are refused, which blocks DNS rebinding.

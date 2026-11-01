@@ -16,7 +16,7 @@ const INFO = JSON.stringify({
   'matched-at': 'http://127.0.0.1:3000',
 });
 
-describe('buildScanArgs', () => {
+describe('nuclei: buildScanArgs', () => {
   const args = buildScanArgs('http://127.0.0.1:3000', 'http://127.0.0.1:50000');
 
   it('passes the URL as its own argument right after -u', () => {
@@ -37,18 +37,20 @@ describe('buildScanArgs', () => {
   }
 });
 
-describe('parseFindings', () => {
-  it('reads one finding per line and skips blank lines', () => {
-    const findings = parseFindings(`${FINDING}\n\n${INFO}\n`);
-    assert.equal(findings.length, 2);
-    assert.equal(findings[0].templateId, 'prometheus-metrics');
-    assert.equal(findings[0].severity, 'medium');
-    assert.equal(findings[1].matcherName, 'content-security-policy');
-    assert.equal(findings[1].raw['template-id'], 'http-missing-security-headers');
+describe('nuclei: parseFindings', () => {
+  it('converts each line into the shared finding shape', () => {
+    const [medium, info] = parseFindings(`${FINDING}\n\n${INFO}\n`);
+    assert.deepEqual(
+      { tool: medium.tool, type: medium.type, severity: medium.severity, ref: medium.ref, location: medium.location },
+      { tool: 'nuclei', type: 'template-match', severity: 'medium', ref: 'prometheus-metrics', location: 'http://127.0.0.1:3000/metrics' },
+    );
+    assert.equal(medium.title, 'Prometheus Metrics - Detect');
+    assert.equal(info.detail, 'content-security-policy');
+    assert.equal(info.raw['template-id'], 'http-missing-security-headers');
   });
 });
 
-describe('interpretRun: an empty result is only clean if the scan really ran', () => {
+describe('nuclei: an empty result is only clean if the scan really ran', () => {
   const ok = { code: 0, stdout: FINDING, stderr: '[INF] Scan completed in 20m', aborted: false };
 
   it('a normal run is done', () => {
