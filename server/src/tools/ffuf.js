@@ -71,12 +71,12 @@ export function interpretRun({ code, stdout, stderr, aborted }, scope) {
   return { status: error ? 'failed' : 'done', error, findings, log: logTail(stderr) };
 }
 
-async function getVersion(signal) {
-  const { stdout, stderr } = await run(ffufBinary(), ['-V'], { signal });
+async function getVersion(options) {
+  const { stdout, stderr } = await run(ffufBinary(), ['-V'], options);
   return (stdout + stderr).match(/version: ([\w.-]+)/)?.[1] ?? 'unknown';
 }
 
-export async function runFfufScan({ target }, { signal } = {}) {
+export async function runFfufScan({ target }, options = {}) {
   const started = Date.now();
   const wordlist = ffufWordlist();
   if (!wordlist) {
@@ -91,8 +91,8 @@ export async function runFfufScan({ target }, { signal } = {}) {
   }
   const proxy = await startScopeProxy(target);
   try {
-    const version = await getVersion(signal);
-    const output = await run(ffufBinary(), buildScanArgs(target.url, wordlist, proxy.url), { signal });
+    const version = await getVersion(options);
+    const output = await run(ffufBinary(), buildScanArgs(target.url, wordlist, proxy.url), options);
     const scope = proxy.stats();
     return { ...interpretRun(output, scope), version, scope, durationMs: Date.now() - started };
   } catch (err) {

@@ -219,6 +219,18 @@ th {
   color: var(--err-text);
 }
 
+.pill.queued,
+.pill.running {
+  background: var(--low-bg);
+  color: var(--low-text);
+}
+
+.pill.timed_out,
+.pill.cancelled {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
 .pill.sev-critical {
   background: #7a1010;
   color: #fff;
@@ -249,7 +261,12 @@ th {
   margin-top: 8px;
 }
 
-.banner:not(.ok):not(.error) {
+.banner.warn {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.banner:not(.ok):not(.error):not(.warn) {
   background: var(--bg);
   border: 1px solid var(--border);
   margin-bottom: 12px;
@@ -304,6 +321,44 @@ label.check {
 
 .tool-result.error {
   border-left-color: var(--err-text);
+}
+
+.tool-result.stopped {
+  border-left-color: var(--warn-text);
+}
+
+.tool-result.running {
+  border-left-color: var(--low-text);
+}
+
+.tool-result.pending {
+  border-left-color: var(--border);
+  color: var(--muted);
+}
+
+.scan-detail {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.row.scan-head {
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.scan-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.scan-head .meta {
+  margin: 0;
+}
+
+.scan-head button {
+  margin-left: auto;
 }
 
 .tool-head {

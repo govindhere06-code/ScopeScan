@@ -53,12 +53,14 @@ export function startScopeProxy(allowed, { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_
     if (map.has(k) || map.size < MAX_BLOCKED_LISTED) map.set(k, (map.get(k) ?? 0) + 1);
   }
 
-  // Every socket, on both sides, is closed after `idleTimeoutMs` without traffic. Only a
-  // quiet connection to the target counts as a timeout (an idle scanner connection is
-  // normal), and it's recorded by the request it was carrying.
+  // Every socket, on both sides, is closed after a while without traffic. Only a quiet
+  // connection to the target counts as a timeout (an idle scanner connection is normal), and
+  // it's recorded by the request it was carrying. The scanner side waits twice as long:
+  // while the target is silent the scanner is silent too, and if its timer went first the
+  // target's silence would never be counted.
   function track(socket, { toTarget = false, label = '' } = {}) {
     sockets.add(socket);
-    socket.setTimeout(idleTimeoutMs, () => {
+    socket.setTimeout(toTarget ? idleTimeoutMs : idleTimeoutMs * 2, () => {
       if (toTarget) {
         targetTimeouts += 1;
         tally(timedOut, label);

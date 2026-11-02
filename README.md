@@ -2,7 +2,7 @@
 
 A web platform that runs open-source security scanners (Nuclei, nmap, ffuf) against targets **you are authorized to test**, normalizes their results, and uses a local LLM to triage and explain the findings.
 
-> **Status:** early development — scope allowlist plus nmap, ffuf and Nuclei scanning work end to end; scan history and background jobs are next. See [Roadmap](#roadmap).
+> **Status:** early development — scope allowlist, nmap/ffuf/Nuclei scanning, background scans and scan history work end to end; AI triage is next. See [Roadmap](#roadmap).
 
 ## Authorized targets only
 
@@ -24,7 +24,7 @@ Scanning systems you don't own or don't have written permission to test is illeg
 - [x] **1 · Project skeleton + scope allowlist**
 - [x] **2 · Nuclei integration**
 - [x] **3 · nmap and ffuf behind a shared interface**
-- [ ] **4 · Scan history + background jobs**
+- [x] **4 · Scan history + background jobs**
 - [ ] **5 · AI triage layer (local LLM)**
 - [ ] **6 · Report generation + polish**
 
@@ -67,7 +67,17 @@ Optional settings go in `server/.env` (see `server/.env.example`). By default th
 
 Scanning needs the tools themselves: [nmap](https://nmap.org), [ffuf](https://github.com/ffuf/ffuf) and [Nuclei](https://github.com/projectdiscovery/nuclei), on your `PATH` or set in `server/.env`. ffuf also needs a wordlist (`FFUF_WORDLIST`). Against Juice Shop, nmap takes seconds, ffuf about 3 minutes and Nuclei about 15; ScopeScan rate-limits the web scanners so the target doesn't fall over.
 
+Scans run in the background on the server, so you can start one and close the page. `SCAN_TIMEOUT_MINUTES` (default 60) and `SCAN_CONCURRENCY` (default 1, at most 2) in `server/.env` control the time limit and how many scans run at once.
+
 Every tool's output is converted into one finding format (`tool`, `type`, `severity`, `title`, `location`, `detail`, `ref`, plus the tool's raw record), so the rest of ScopeScan doesn't need to know which tool found what.
+
+## How scans run
+
+- **In the background.** Starting a scan only queues it, and the request answers at once. The page polls for progress, and every scan is saved with its target, the allowlist entry's port scope at the time, each tool's version, status, log and findings, and start and end times.
+- **One at a time.** By default one scan runs and the rest wait in order. Even with two allowed, the same target is never scanned twice at once.
+- **The allowlist is checked twice:** when the scan is requested and again when it starts, in case the entry was removed or narrowed while the scan waited.
+- **Status:** queued → running → done, failed, timed out or cancelled. A scan that runs past the time limit has its tool killed and is marked timed out, and a cancelled one is killed the same way. Whatever a killed tool had already found is kept, labelled with the reason it stopped.
+- **No orphaned scanners.** Every scanner process is recorded while it runs. Ctrl+C kills them with the server; after a crash, the next start kills any that are still running (only if the process ID still belongs to the same program) and marks the interrupted scans failed.
 
 ## How the scope gate works
 

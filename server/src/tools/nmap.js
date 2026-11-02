@@ -95,17 +95,17 @@ export function interpretRun({ code, stdout, stderr, aborted }, host) {
   return { status: error ? 'failed' : 'done', error, findings, log: logTail(stderr) };
 }
 
-async function getVersion(signal) {
-  const { stdout } = await run(nmapBinary(), ['--version'], { signal });
+async function getVersion(options) {
+  const { stdout } = await run(nmapBinary(), ['--version'], options);
   return stdout.match(/Nmap version ([\w.-]+)/)?.[1] ?? 'unknown';
 }
 
 // `ports` comes from the allowlist entry that authorized this host.
-export async function runNmapScan({ target, ports }, { signal } = {}) {
+export async function runNmapScan({ target, ports }, options = {}) {
   const started = Date.now();
   try {
-    const version = await getVersion(signal);
-    const output = await run(nmapBinary(), buildScanArgs(target.host, ports), { signal });
+    const version = await getVersion(options);
+    const output = await run(nmapBinary(), buildScanArgs(target.host, ports), options);
     return { ...interpretRun(output, target.host), version, durationMs: Date.now() - started };
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;

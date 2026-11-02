@@ -65,11 +65,11 @@ export function interpretRun({ code, stdout, stderr, aborted }, target) {
   return { status: error ? 'failed' : 'done', error, findings, log: logTail(stderr) };
 }
 
-async function getVersion(signal) {
+async function getVersion(options) {
   const bin = nucleiBinary();
   const [engine, templates] = await Promise.all([
-    run(bin, ['-version', '-duc'], { signal }),
-    run(bin, ['-tv', '-duc'], { signal }),
+    run(bin, ['-version', '-duc'], options),
+    run(bin, ['-tv', '-duc'], options),
   ]);
   const engineVersion = (engine.stdout + engine.stderr).match(/Engine Version: (v[\w.-]+)/)?.[1] ?? 'unknown';
   const templatesVersion = (templates.stdout + templates.stderr).match(/templates version: (v[\w.-]+)/)?.[1] ?? 'unknown';
@@ -77,12 +77,13 @@ async function getVersion(signal) {
 }
 
 // `target` is the canonical target returned by isAllowed(): { url, host, port }.
-export async function runNucleiScan({ target }, { signal } = {}) {
+// `options` ({ signal, onSpawn }) goes to every process this starts; see run().
+export async function runNucleiScan({ target }, options = {}) {
   const started = Date.now();
   const proxy = await startScopeProxy(target);
   try {
-    const version = await getVersion(signal);
-    const result = interpretRun(await run(nucleiBinary(), buildScanArgs(target.url, proxy.url), { signal }), target);
+    const version = await getVersion(options);
+    const result = interpretRun(await run(nucleiBinary(), buildScanArgs(target.url, proxy.url), options), target);
     return { ...result, version, scope: proxy.stats(), durationMs: Date.now() - started };
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;

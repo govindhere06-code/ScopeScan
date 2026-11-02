@@ -1,13 +1,11 @@
 import express from 'express';
 import { addTarget, isAllowed, listTargets, removeTarget } from './allowlist.js';
 import { listEvents, logEvent } from './audit.js';
+import { QueueFullError } from './jobs.js';
+import { getScan, listScans } from './scans.js';
 import { ScopeError } from './scope.js';
 import { requireLocalHost, requireSameSite } from './security.js';
-import { runFfufScan } from './tools/ffuf.js';
-import { runNmapScan } from './tools/nmap.js';
-import { runNucleiScan } from './tools/nuclei.js';
 
-const DEFAULT_SCANNERS = { nmap: runNmapScan, ffuf: runFfufScan, nuclei: runNucleiScan };
 // Quickest first, so the slow nuclei scan doesn't hold up the other results.
 const TOOL_ORDER = ['nmap', 'ffuf', 'nuclei'];
 
@@ -19,10 +17,15 @@ function parseTools(input) {
   return TOOL_ORDER.filter((tool) => input.includes(tool));
 }
 
-// `scanners` is swappable so tests can check the gate without launching real scans.
-export function createApp({ db, allowedOrigins, scanners = DEFAULT_SCANNERS }) {
+function scanId(req) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw new ScopeError('invalid scan id');
+  return id;
+}
+
+// `queue` (see jobs.js) runs the scans; tests give it fake scanners.
+export function createApp({ db, allowedOrigins, queue }) {
   const app = express();
-  let scanRunning = false;
   app.disable('x-powered-by');
 
   app.use(requireLocalHost(['127.0.0.1', 'localhost']));
@@ -50,42 +53,29 @@ export function createApp({ db, allowedOrigins, scanners = DEFAULT_SCANNERS }) {
     res.status(result.allowed ? 200 : 403).json(result);
   });
 
-  // Runs the chosen tools one after another and holds the request open until all finish
-  // (a full nuclei scan alone takes about 15 minutes). Ticket 4 replaces this with background jobs.
-  app.post('/api/scans', async (req, res) => {
+  // Queues the scan and answers at once (202); the scan runs in the background and its
+  // progress is read from GET /api/scans/:id. Refused targets never reach the queue.
+  app.post('/api/scans', (req, res) => {
     const tools = parseTools(req.body?.tools);
     const scope = isAllowed(db, req.body?.target);
     if (!scope.allowed) return res.status(403).json({ error: `refused: ${scope.reason}` });
-    // One at a time: two parallel scans are enough to knock Juice Shop over.
-    if (scanRunning) return res.status(409).json({ error: 'a scan is already running; wait for it to finish' });
+    res.status(202).json(queue.enqueue({ target: scope.target, tools }));
+  });
 
-    scanRunning = true;
-    const { target, ports } = scope;
-    const controller = new AbortController();
-    // Closing the page closes the connection; don't leave a scanner running unattended.
-    res.on('close', () => {
-      if (!res.writableFinished) controller.abort();
-    });
-    const results = [];
-    try {
-      for (const tool of tools) {
-        if (controller.signal.aborted) break;
-        const audit = { action: `scan_${tool}`, input: target.url, host: target.host, port: target.port };
-        logEvent(db, { ...audit, decision: 'started' });
-        const result = await scanners[tool]({ target, ports }, { signal: controller.signal });
-        const blocked = result.scope ? `, ${result.scope.blockedRequests} off-scope requests blocked` : '';
-        const summary = `${result.findings.length} findings${blocked}`;
-        logEvent(db, {
-          ...audit,
-          decision: result.status,
-          reason: result.error ? `${result.error} (${summary})` : summary,
-        });
-        results.push({ tool, ...result });
-      }
-      if (!controller.signal.aborted) res.json({ target, ports, results });
-    } finally {
-      scanRunning = false;
-    }
+  app.get('/api/scans', (req, res) => res.json(listScans(db)));
+
+  app.get('/api/scans/:id', (req, res) => {
+    const scan = getScan(db, scanId(req));
+    if (!scan) return res.status(404).json({ error: 'no such scan' });
+    res.json(scan);
+  });
+
+  app.post('/api/scans/:id/cancel', (req, res) => {
+    const id = scanId(req);
+    const outcome = queue.cancel(id);
+    if (outcome === null) return res.status(404).json({ error: 'no such scan' });
+    if (outcome === 'finished') return res.status(409).json({ error: 'this scan has already finished' });
+    res.json(getScan(db, id));
   });
 
   app.get('/api/audit', (req, res) => res.json(listEvents(db)));
@@ -94,6 +84,7 @@ export function createApp({ db, allowedOrigins, scanners = DEFAULT_SCANNERS }) {
 
   app.use((err, req, res, next) => {
     if (err instanceof ScopeError) return res.status(400).json({ error: err.message });
+    if (err instanceof QueueFullError) return res.status(429).json({ error: err.message });
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'invalid JSON' });
     console.error(err);
     res.status(500).json({ error: 'internal error' });
