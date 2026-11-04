@@ -2,6 +2,8 @@ import express from 'express';
 import { addTarget, isAllowed, listTargets, removeTarget } from './allowlist.js';
 import { listEvents, logEvent } from './audit.js';
 import { QueueFullError } from './jobs.js';
+import { reportData } from './report/data.js';
+import { reportHtml } from './report/html.js';
 import { ACTIVE, getScan, listScans, scanStatus } from './scans.js';
 import { ScopeError } from './scope.js';
 import { requireLocalHost, requireSameSite } from './security.js';
@@ -24,9 +26,11 @@ function scanId(req) {
 }
 
 // `queue` (see jobs.js) runs the scans; tests give it fake scanners. `triage` (see ai/queue.js)
-// is null when AI triage is turned off.
-export function createApp({ db, allowedOrigins, queue, triage = null }) {
+// is null when AI triage is turned off. `renderPdf(html)` (see report/pdf.js) is null when no
+// browser was found to print reports with.
+export function createApp({ db, allowedOrigins, queue, triage = null, renderPdf = null }) {
   const app = express();
+  let reportBusy = false;
   app.disable('x-powered-by');
 
   app.use(requireLocalHost(['127.0.0.1', 'localhost']));
@@ -60,7 +64,7 @@ export function createApp({ db, allowedOrigins, queue, triage = null }) {
     const tools = parseTools(req.body?.tools);
     const scope = isAllowed(db, req.body?.target);
     if (!scope.allowed) return res.status(403).json({ error: `refused: ${scope.reason}` });
-    res.status(202).json(queue.enqueue({ target: scope.target, tools }));
+    res.status(202).json(queue.enqueue({ target: scope.target, tools, scopeAuditId: scope.auditId }));
   });
 
   app.get('/api/scans', (req, res) => res.json(listScans(db)));
@@ -90,6 +94,39 @@ export function createApp({ db, allowedOrigins, queue, triage = null }) {
     if (triage.busyWith(id)) return res.status(409).json({ error: 'AI triage of this scan is already under way' });
     if (!triage.enqueue(id)) return res.status(409).json({ error: 'this scan has no findings to triage' });
     res.status(202).json(getScan(db, id));
+  });
+
+  // The PDF report of a finished scan. POST rather than GET: making one starts a browser, so only
+  // ScopeScan's own page may ask for it (see security.js). One at a time.
+  app.post('/api/scans/:id/report', async (req, res) => {
+    const id = scanId(req);
+    if (!renderPdf) {
+      return res.status(503).json({ error: 'PDF reports need Microsoft Edge or Google Chrome: set REPORT_BROWSER in server/.env' });
+    }
+    const data = reportData(db, id);
+    if (!data) return res.status(404).json({ error: 'no such scan' });
+    if (ACTIVE.includes(data.scan.status)) return res.status(409).json({ error: 'wait for the scan to finish first' });
+    if (reportBusy) return res.status(409).json({ error: 'another report is being made; try again in a moment' });
+    reportBusy = true;
+    let pdf;
+    try {
+      pdf = await renderPdf(reportHtml(data));
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: `the report could not be made: ${err.message}` });
+    } finally {
+      reportBusy = false;
+    }
+    logEvent(db, {
+      action: 'report_created',
+      input: data.scan.target,
+      host: data.scan.host,
+      port: data.scan.port,
+      decision: 'created',
+      reason: `scan #${id}: ${data.findings.length} findings, ${Math.round(pdf.length / 1024)} KB`,
+      scanId: id,
+    });
+    res.type('application/pdf').attachment(`scopescan-scan-${id}.pdf`).send(pdf);
   });
 
   app.get('/api/audit', (req, res) => res.json(listEvents(db)));

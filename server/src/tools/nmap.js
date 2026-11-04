@@ -105,8 +105,9 @@ export async function runNmapScan({ target, ports }, options = {}) {
   const started = Date.now();
   try {
     const version = await getVersion(options);
-    const output = await run(nmapBinary(), buildScanArgs(target.host, ports), options);
-    return { ...interpretRun(output, target.host), version, durationMs: Date.now() - started };
+    const command = [nmapBinary(), ...buildScanArgs(target.host, ports)];
+    const output = await run(command[0], command.slice(1), options);
+    return { ...interpretRun(output, target.host), version, command, durationMs: Date.now() - started };
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
     return notFound('nmap', 'NMAP_PATH', started);

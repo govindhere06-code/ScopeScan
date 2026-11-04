@@ -2,7 +2,7 @@
 
 A web platform that runs open-source security scanners (Nuclei, nmap, ffuf) against targets **you are authorized to test**, normalizes their results, and uses a local LLM to triage and explain the findings.
 
-> **Status:** early development — scope allowlist, nmap/ffuf/Nuclei scanning, background scans, scan history and local AI triage work end to end; PDF reports are next. See [Roadmap](#roadmap).
+> **Status:** all six roadmap tickets are done — scope allowlist, nmap/ffuf/Nuclei scanning, background scans, scan history, local AI triage and one-click PDF reports work end to end. See [Roadmap](#roadmap).
 
 ## Authorized targets only
 
@@ -10,13 +10,13 @@ ScopeScan refuses to scan any target that is not on an allowlist you control. Th
 
 Scanning systems you don't own or don't have written permission to test is illegal in most countries (in India, under the IT Act 2000). Development and testing use only deliberately vulnerable apps running locally ([OWASP Juice Shop](https://owasp.org/www-project-juice-shop/) and [DVWA](https://github.com/digininja/DVWA)).
 
-## Planned features
+## Features
 
 - **Scope allowlist** — default deny; targets are host + port scope, stored in canonical form, with an audit log of every decision
 - **Tool orchestration** — Nuclei, nmap and ffuf run as child processes and their output is normalized into one finding format
-- **Background scans and history** — scans run as queued jobs; past results are kept for comparison
+- **Background scans and history** — scans run as queued jobs; every scan and its results are kept
 - **AI triage** — a local model (Ollama) flags likely false positives, explains findings and suggests fixes; scan data never leaves the machine
-- **PDF reports** — scope, methodology, findings, severity, evidence and remediation
+- **PDF reports** — one click: executive summary, scope and authorization record, methodology with tool versions and commands, findings with evidence and fixes, AI-written text marked as such
 
 ## Roadmap
 
@@ -26,7 +26,7 @@ Scanning systems you don't own or don't have written permission to test is illeg
 - [x] **3 · nmap and ffuf behind a shared interface**
 - [x] **4 · Scan history + background jobs**
 - [x] **5 · AI triage layer (local LLM)**
-- [ ] **6 · Report generation + polish**
+- [x] **6 · Report generation + polish**
 
 ## Tech stack
 
@@ -60,7 +60,7 @@ npm --prefix client install
 
 npm run server    # API on http://127.0.0.1:4000
 npm run client    # web page on http://127.0.0.1:5173 (in a second terminal)
-npm test          # scope, security, job and triage tests
+npm test          # scope, security, job, triage and report tests
 npm run eval      # score the AI triage against the labelled eval set (needs Ollama)
 ```
 
@@ -89,6 +89,19 @@ After a scan finishes, each finding is sent to a local model ([Ollama](https://o
 - **Anchored to the tool.** The model starts from the scanner's severity, and a different severity is only accepted with a stated reason.
 - **Scan output is treated as hostile.** It reaches the model fenced off as untrusted data, without full response bodies, and the reply must match a strict JSON schema (one retry, then the finding is marked "no AI answer"). The model can still be talked round: in testing, one planted "ignore previous instructions" line was enough. So if a finding's data contains instruction-like text, the model's verdict is not applied, and the finding is flagged as a possible prompt injection for a person to check.
 - **Measured.** `npm run eval` runs the model over a labelled set of real findings from the lab (kept out of git, in `lab/`) and reports how often it agrees on false positives and severity, including findings with planted injections. First measurement with `llama3.1:8b` on 41 Juice Shop findings: false-positive calls agree 90% of the time (7 of 9 false positives caught, 2 of 32 real findings wrongly flagged), severity agrees exactly 66% of the time and within one level 76%. Its main weakness is rating missing security headers too high. The model on its own followed 3 of 4 planted instructions; with the guard, none got through. The labels are a first pass still to be reviewed by hand, and the prompt was adjusted on the same set, so treat these numbers as optimistic.
+
+## The PDF report
+
+A finished scan has a **Download PDF report** button. The report is built from the scan's saved data:
+
+1. **Executive summary** — counts by severity (as the tools rated them, and after AI triage), the most important findings, and a plain warning if the scan or a tool did not complete. It is assembled by ScopeScan, not written by the AI.
+2. **Scope and authorization** — the allowlist entry that permitted the scan (a copy is kept with the scan, so it survives the entry being removed), how many requests the scope proxy forwarded and blocked, and every audit-log entry for the scan, starting with the scope check that let it be queued.
+3. **Methodology** — when it ran, each tool's version (Nuclei's template version too), result, duration and the command line it was run with, and how AI triage works.
+4. **Findings** — each with its severity, location, the tool's evidence, and the AI's explanation and fix in a box marked *AI-assisted*. Where the AI changed a severity, the tool's own rating is shown next to it.
+5. **Likely false positives** — listed in full with the AI's reason, not hidden.
+6. **Limitations** — what an automated scan can't show.
+
+The PDF is printed by Microsoft Edge or Google Chrome in headless mode, so nothing else needs installing; set `REPORT_BROWSER` in `server/.env` to pick one (or `off`). The report page is self-contained and its Content-Security-Policy stops it loading anything or running scripts, and every value from a scan is escaped, since findings carry text the target chose. Making a report is a POST from ScopeScan's own page (another website can't trigger it) and is recorded in the audit log.
 
 ## How the scope gate works
 

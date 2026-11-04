@@ -10,7 +10,7 @@ export function createTriageQueue({ db, chat }) {
   let running = null; // { scanId, controller }
 
   function audit(scanId, decision, reason) {
-    logEvent(db, { action: 'ai_triage', decision, reason: `scan #${scanId}${reason ? `: ${reason}` : ''}` });
+    logEvent(db, { action: 'ai_triage', decision, reason: `scan #${scanId}${reason ? `: ${reason}` : ''}`, scanId });
   }
 
   // Returns false if the scan has no findings to triage.

@@ -92,9 +92,10 @@ export async function runFfufScan({ target }, options = {}) {
   const proxy = await startScopeProxy(target);
   try {
     const version = await getVersion(options);
-    const output = await run(ffufBinary(), buildScanArgs(target.url, wordlist, proxy.url), options);
+    const command = [ffufBinary(), ...buildScanArgs(target.url, wordlist, proxy.url)];
+    const output = await run(command[0], command.slice(1), options);
     const scope = proxy.stats();
-    return { ...interpretRun(output, scope), version, scope, durationMs: Date.now() - started };
+    return { ...interpretRun(output, scope), version, command, scope, durationMs: Date.now() - started };
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
     return { ...notFound('ffuf', 'FFUF_PATH', started), scope: proxy.stats() };

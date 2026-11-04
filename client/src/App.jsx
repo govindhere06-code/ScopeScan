@@ -7,12 +7,15 @@ const displayPorts = (ports) => (ports === '*' ? 'all ports' : ports.replaceAll(
 
 // How often the page asks for progress while a scan is queued or running.
 const POLL_MS = 2000;
+const AUDIT_SHOWN = 12;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 export default function App() {
   const [targets, setTargets] = useState([]);
   const [scans, setScans] = useState([]);
   const [audit, setAudit] = useState([]);
-  const [selectedScan, setSelectedScan] = useState(null);
+  // undefined: nothing chosen yet, so the newest scan is shown; null: the user closed it.
+  const [selectedScan, setSelectedScan] = useState(undefined);
   const [loadError, setLoadError] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -38,7 +41,8 @@ export default function App() {
     return () => clearInterval(timer);
   }, [anyActive, refresh]);
 
-  const selected = scans.find((s) => s.id === selectedScan);
+  const selectedId = selectedScan === undefined ? scans[0]?.id : selectedScan;
+  const selected = scans.find((s) => s.id === selectedId);
 
   return (
     <main>
@@ -75,7 +79,7 @@ export default function App() {
 
       <section>
         <h2>Scan history</h2>
-        <ScanHistory scans={scans} selectedId={selectedScan} onSelect={setSelectedScan} />
+        <ScanHistory scans={scans} selectedId={selectedId} onSelect={setSelectedScan} />
         {selected && <ScanDetail summary={selected} onChanged={refresh} />}
       </section>
 
@@ -224,7 +228,7 @@ const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
 const TOOLS = [
   { id: 'nmap', label: 'nmap', hint: 'open ports and services (seconds)' },
   { id: 'ffuf', label: 'ffuf', hint: 'hidden paths (about 3 minutes)' },
-  { id: 'nuclei', label: 'Nuclei', hint: 'known issues (about 15 minutes)' },
+  { id: 'nuclei', label: 'Nuclei', hint: 'known issues (15 to 30 minutes)' },
 ];
 const ACTIVE = ['queued', 'running'];
 const isActive = (status) => ACTIVE.includes(status);
@@ -245,12 +249,14 @@ const aiDone = (f) => f.triage?.status === 'done';
 const effectiveSeverity = (f) => (aiDone(f) ? f.triage.severity : f.severity);
 const flaggedFalsePositive = (f) => aiDone(f) && f.triage.falsePositive;
 
-// Likely false positives go last but stay in the list: the AI flags, it never removes.
+// Likely false positives go last but stay in the list: the AI flags, it never removes. Between
+// equals, the one the tool itself rated higher comes first. The PDF report uses the same order.
 function byRank(a, b) {
   return (
     flaggedFalsePositive(a) - flaggedFalsePositive(b) ||
     SEVERITY_ORDER.indexOf(effectiveSeverity(a)) - SEVERITY_ORDER.indexOf(effectiveSeverity(b)) ||
-    TOOLS.findIndex((t) => t.id === a.tool) - TOOLS.findIndex((t) => t.id === b.tool)
+    SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
+    a.id - b.id
   );
 }
 
@@ -332,7 +338,7 @@ function ScanForm({ targets, onStarted }) {
       <p className="meta">
         Scans run on the server in the background, one at a time, and are saved to the history below. You can close
         this page and come back. The tools in a scan run in order: nmap takes seconds, ffuf about 3 minutes, Nuclei
-        about 15.
+        15 to 30.
       </p>
     </>
   );
@@ -453,10 +459,12 @@ function ScanDetail({ summary, onChanged }) {
             </>
           )}
         </span>
-        {active && (
+        {active ? (
           <button type="button" className="link danger" onClick={cancel}>
             Cancel scan
           </button>
+        ) : (
+          <ReportButton scanId={scan.id} />
         )}
       </div>
       {scan.status === 'queued' && <p className="banner">Waiting for the scan before it to finish.</p>}
@@ -467,8 +475,39 @@ function ScanDetail({ summary, onChanged }) {
         ))}
       </div>
       {!active && <TriageBanner scan={scan} onChanged={onChanged} />}
-      <FindingsTable key={scan.id} results={scan.results} />
+      <FindingsTable key={scan.id} results={scan.results} target={scan.target} />
     </div>
+  );
+}
+
+function ReportButton({ scanId }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function download() {
+    setBusy(true);
+    setError(null);
+    try {
+      const url = URL.createObjectURL(await api.scanReport(scanId));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `scopescan-scan-${scanId}.pdf`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="report-button" onClick={download} disabled={busy}>
+        {busy ? 'Making the PDF…' : 'Download PDF report'}
+      </button>
+      {error && <p className="form-error">{error}</p>}
+    </>
   );
 }
 
@@ -531,7 +570,12 @@ function TriageBanner({ scan, onChanged }) {
   );
 }
 
-function FindingsTable({ results }) {
+// Every web finding is on the scan's target, so the table shows just the path.
+function shortLocation(location, target) {
+  return location?.startsWith(target) ? location.slice(target.length) || '/' : location;
+}
+
+function FindingsTable({ results, target }) {
   const [selected, setSelected] = useState(null);
   const [toolFilter, setToolFilter] = useState('all');
 
@@ -565,7 +609,7 @@ function FindingsTable({ results }) {
               <th>Severity</th>
               <th>Tool</th>
               <th>Finding</th>
-              <th>Location</th>
+              <th>Path</th>
               <th>Detail</th>
             </tr>
           </thead>
@@ -580,14 +624,16 @@ function FindingsTable({ results }) {
                   <span className={`pill sev-${effectiveSeverity(f)}`}>{effectiveSeverity(f)}</span>
                   {effectiveSeverity(f) !== f.severity && <div className="was">tool: {f.severity}</div>}
                 </td>
-                <td className="mono">{f.tool}</td>
+                <td className="mono nowrap">{f.tool}</td>
                 <td>
                   {f.title}
                   {flaggedFalsePositive(f) && <span className="pill flag">likely false positive</span>}
                   {f.triage?.injectionSuspected && <span className="pill flag danger">possible prompt injection</span>}
                   {f.triage?.status === 'failed' && <span className="pill flag muted">no AI answer</span>}
                 </td>
-                <td className="mono">{f.location}</td>
+                <td className="mono" title={f.location}>
+                  {shortLocation(f.location, target)}
+                </td>
                 <td className="detail">{f.detail}</td>
               </tr>
             ))}
@@ -682,7 +728,7 @@ function ToolResult({ result, now }) {
       <p className="tool-head">
         <strong>{result.tool}</strong> <StatusPill status={result.status} />{' '}
         <span className="meta">
-          {result.findings.length} findings
+          {plural(result.findings.length, 'finding')}
           {counts.length > 0 && <> ({counts.map(([s, n]) => `${n} ${s}`).join(', ')})</>} ·{' '}
           {formatDuration(result.durationMs ?? elapsed(result.startedAt, result.finishedAt, now))}
           {result.version && <> · {result.version}</>}
@@ -721,7 +767,9 @@ function ToolResult({ result, now }) {
 }
 
 function AuditLog({ events }) {
+  const [all, setAll] = useState(false);
   if (events.length === 0) return <p className="empty">Nothing logged yet.</p>;
+  const shown = all ? events : events.slice(0, AUDIT_SHOWN);
   return (
     <div className="table-wrap">
       <table>
@@ -735,10 +783,10 @@ function AuditLog({ events }) {
           </tr>
         </thead>
         <tbody>
-          {events.map((e) => (
+          {shown.map((e) => (
             <tr key={e.id}>
-              <td>{new Date(e.ts).toLocaleString()}</td>
-              <td className="mono">{e.action}</td>
+              <td className="nowrap">{new Date(e.ts).toLocaleString()}</td>
+              <td className="mono nowrap">{e.action}</td>
               <td className="mono">{e.input ?? e.host}</td>
               <td>
                 <span className={`pill ${e.decision}`}>{e.decision}</span>
@@ -748,6 +796,11 @@ function AuditLog({ events }) {
           ))}
         </tbody>
       </table>
+      {events.length > AUDIT_SHOWN && (
+        <button type="button" className="link" onClick={() => setAll(!all)}>
+          {all ? `Show the latest ${AUDIT_SHOWN}` : `Show all ${events.length} entries`}
+        </button>
+      )}
     </div>
   );
 }

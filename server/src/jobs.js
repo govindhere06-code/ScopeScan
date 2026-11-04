@@ -42,11 +42,12 @@ export function createScanQueue({
       shutdown: 'the server was stopped during this scan',
     })[reason];
 
-  function enqueue({ target, tools }) {
+  // `scopeAuditId` is the audit entry of the scope check that approved the request.
+  function enqueue({ target, tools, scopeAuditId = null }) {
     if (scans.countQueued(db) >= maxQueued) {
       throw new QueueFullError(`${maxQueued} scans are already waiting; let some finish first`);
     }
-    const id = scans.createScan(db, { target, tools });
+    const id = scans.createScan(db, { target, tools, scopeAuditId });
     logEvent(db, {
       action: 'scan_queued',
       input: target.url,
@@ -54,6 +55,7 @@ export function createScanQueue({
       port: target.port,
       decision: 'queued',
       reason: `scan #${id}: ${tools.join(', ')}`,
+      scanId: id,
     });
     pump();
     return scans.getScan(db, id);
@@ -82,18 +84,18 @@ export function createScanQueue({
 
   async function execute(scan, controller) {
     const { signal } = controller;
-    const audit = { input: scan.target, host: scan.host, port: scan.port };
+    const audit = { input: scan.target, host: scan.host, port: scan.port, scanId: scan.id };
 
     // Checked again now, not just when queued: the entry may have been removed or narrowed
     // while this scan waited.
-    const scope = isAllowed(db, scan.target);
+    const scope = isAllowed(db, scan.target, { scanId: scan.id });
     if (!scope.allowed) {
       scans.finishScan(db, scan.id, 'failed', `refused when it was about to start: ${scope.reason}`);
       logEvent(db, { ...audit, action: 'scan_refused', decision: 'denied', reason: `scan #${scan.id}: ${scope.reason}` });
       return;
     }
     const { target, ports } = scope;
-    scans.markScanRunning(db, scan.id, ports);
+    scans.markScanRunning(db, scan.id, scope.entry);
     logEvent(db, { ...audit, action: 'scan_started', decision: 'started', reason: `scan #${scan.id}` });
 
     const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
@@ -119,7 +121,8 @@ export function createScanQueue({
         failed ||= result.status === 'failed';
 
         const blocked = result.scope ? `, ${result.scope.blockedRequests} off-scope requests blocked` : '';
-        const summary = `scan #${scan.id}: ${result.findings.length} findings${blocked}`;
+        const n = result.findings.length;
+        const summary = `scan #${scan.id}: ${n} ${n === 1 ? 'finding' : 'findings'}${blocked}`;
         logEvent(db, {
           ...toolAudit,
           decision: result.status,
@@ -159,7 +162,7 @@ export function createScanQueue({
     if (status !== 'queued') return 'finished';
     scans.finishScan(db, id, 'cancelled', 'cancelled before it started');
     const { host, port, target } = scans.getScan(db, id);
-    logEvent(db, { action: 'scan_finished', input: target, host, port, decision: 'cancelled', reason: `scan #${id}` });
+    logEvent(db, { action: 'scan_finished', input: target, host, port, decision: 'cancelled', reason: `scan #${id}`, scanId: id });
     return 'cancelled';
   }
 
@@ -181,11 +184,21 @@ export function createScanQueue({
 export async function recoverScans(db) {
   const killed = await killOrphans(db);
   for (const p of killed) {
-    logEvent(db, { action: 'orphan_killed', decision: 'killed', reason: `${p.name} (pid ${p.pid}) from scan #${p.scan_id}` });
+    logEvent(db, {
+      action: 'orphan_killed',
+      decision: 'killed',
+      reason: `${p.name} (pid ${p.pid}) from scan #${p.scan_id}`,
+      scanId: p.scan_id,
+    });
   }
   const stale = scans.failInterrupted(db);
   for (const s of stale) {
-    logEvent(db, { action: 'scan_finished', decision: 'failed', reason: `scan #${s.id}: interrupted by a server restart` });
+    logEvent(db, {
+      action: 'scan_finished',
+      decision: 'failed',
+      reason: `scan #${s.id}: interrupted by a server restart`,
+      scanId: s.id,
+    });
   }
   return { killed, stale };
 }

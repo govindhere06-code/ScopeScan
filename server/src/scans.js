@@ -6,11 +6,13 @@ export const ACTIVE = ['queued', 'running'];
 const now = () => new Date().toISOString();
 
 // `target` is the canonical target the scope gate approved; `tools` is already in run order.
-export function createScan(db, { target, tools }) {
+export function createScan(db, { target, tools, scopeAuditId = null }) {
   return db.transaction(() => {
     const { lastInsertRowid: id } = db
-      .prepare("INSERT INTO scans (target, host, port, status, created_at) VALUES (?, ?, ?, 'queued', ?)")
-      .run(target.url, target.host, target.port, now());
+      .prepare(
+        "INSERT INTO scans (target, host, port, status, created_at, scope_audit_id) VALUES (?, ?, ?, 'queued', ?, ?)",
+      )
+      .run(target.url, target.host, target.port, now(), scopeAuditId);
     const addTool = db.prepare("INSERT INTO scan_tools (scan_id, position, tool, status) VALUES (?, ?, ?, 'queued')");
     tools.forEach((tool, i) => addTool.run(id, i, tool));
     return Number(id);
@@ -37,8 +39,15 @@ export function toolsOf(db, scanId) {
     .map((r) => r.tool);
 }
 
-export function markScanRunning(db, id, ports) {
-  db.prepare("UPDATE scans SET status = 'running', ports = ?, started_at = ? WHERE id = ?").run(ports, now(), id);
+// `entry` is the allowlist entry that permitted the scan as it starts; it is kept with the scan
+// so the report can show it even if the entry is later removed.
+export function markScanRunning(db, id, entry) {
+  db.prepare("UPDATE scans SET status = 'running', ports = ?, allowlist_entry = ?, started_at = ? WHERE id = ?").run(
+    entry.ports,
+    JSON.stringify(entry),
+    now(),
+    id,
+  );
 }
 
 export function markToolRunning(db, scanId, tool) {
@@ -52,14 +61,15 @@ export function markToolRunning(db, scanId, tool) {
 export function saveToolResult(db, scanId, tool, result) {
   db.transaction(() => {
     db.prepare(
-      `UPDATE scan_tools SET status = ?, version = ?, error = ?, log = ?, scope = ?, finished_at = ?, duration_ms = ?
-       WHERE scan_id = ? AND tool = ?`,
+      `UPDATE scan_tools SET status = ?, version = ?, error = ?, log = ?, scope = ?, command = ?, finished_at = ?,
+       duration_ms = ? WHERE scan_id = ? AND tool = ?`,
     ).run(
       result.status,
       result.version ?? null,
       result.error ?? null,
       result.log ?? null,
       result.scope ? JSON.stringify(result.scope) : null,
+      result.command ? JSON.stringify(result.command) : null,
       now(),
       result.durationMs ?? null,
       scanId,
@@ -152,6 +162,7 @@ export function getScan(db, id) {
       error: t.error,
       log: t.log,
       scope: t.scope ? JSON.parse(t.scope) : null,
+      command: t.command ? JSON.parse(t.command) : null,
       startedAt: t.started_at,
       finishedAt: t.finished_at,
       durationMs: t.duration_ms,
@@ -168,5 +179,11 @@ export function getScan(db, id) {
         triage: triage.get(f.id) ?? null,
       })),
     }));
-  return { ...scanRow(r), results, triage: scanTriageSummary(db, id) };
+  return {
+    ...scanRow(r),
+    allowlistEntry: r.allowlist_entry ? JSON.parse(r.allowlist_entry) : null,
+    scopeAuditId: r.scope_audit_id,
+    results,
+    triage: scanTriageSummary(db, id),
+  };
 }

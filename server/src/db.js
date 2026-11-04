@@ -20,7 +20,8 @@ const SCHEMA = `
     host     TEXT,
     port     INTEGER,
     decision TEXT NOT NULL,
-    reason   TEXT
+    reason   TEXT,
+    scan_id  INTEGER            -- the scan this event belongs to, if any
   );
 
   -- One row per scan request. status: queued -> running -> done | failed | timed_out | cancelled
@@ -30,6 +31,8 @@ const SCHEMA = `
     host        TEXT NOT NULL,
     port        INTEGER NOT NULL,
     ports       TEXT,              -- the allowlist entry's port scope when the scan started
+    allowlist_entry TEXT,          -- that whole entry as JSON, kept in case it is later removed
+    scope_audit_id  INTEGER,       -- the audit_log row of the scope check that let it be queued
     status      TEXT NOT NULL,
     error       TEXT,
     created_at  TEXT NOT NULL,
@@ -49,6 +52,7 @@ const SCHEMA = `
     error       TEXT,
     log         TEXT,
     scope       TEXT,              -- scope proxy counts, as JSON
+    command     TEXT,              -- the arguments the tool was run with, as JSON
     started_at  TEXT,
     finished_at TEXT,
     duration_ms INTEGER,
@@ -115,6 +119,24 @@ const SCHEMA = `
   );
 `;
 
+// CREATE TABLE IF NOT EXISTS leaves a table from an older version alone, so columns added
+// since then are added here.
+const ADDED_COLUMNS = [
+  ['audit_log', 'scan_id', 'INTEGER'],
+  ['scans', 'allowlist_entry', 'TEXT'],
+  ['scans', 'scope_audit_id', 'INTEGER'],
+  ['scan_tools', 'command', 'TEXT'],
+];
+
+function addMissingColumns(db) {
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    if (!db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS audit_by_scan ON audit_log (scan_id)');
+}
+
 // Outside OneDrive on purpose: syncing a SQLite file while it's being written can corrupt it.
 export function defaultDbPath() {
   const base = process.env.LOCALAPPDATA || path.join(os.homedir(), '.local', 'share');
@@ -127,5 +149,6 @@ export function openDb(file) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  addMissingColumns(db);
   return db;
 }

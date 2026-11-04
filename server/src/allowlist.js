@@ -54,8 +54,9 @@ export function removeTarget(db, id) {
 }
 
 // The gate every scan must pass through. Never throws for bad input: anything that
-// can't be parsed is simply denied. Every decision, allowed or denied, is logged.
-export function isAllowed(db, input) {
+// can't be parsed is simply denied. Every decision, allowed or denied, is logged, and the
+// result carries that log entry's id (auditId). Pass `scanId` when re-checking a queued scan.
+export function isAllowed(db, input, { scanId = null } = {}) {
   let result;
   try {
     const target = parseTarget(input);
@@ -64,13 +65,14 @@ export function isAllowed(db, input) {
     if (!(err instanceof ScopeError)) throw err;
     result = { allowed: false, reason: err.message, target: null };
   }
-  logEvent(db, {
+  const auditId = logEvent(db, {
     action: 'scope_check',
     input,
     host: result.target?.host ?? null,
     port: result.target?.port ?? null,
     decision: result.allowed ? 'allowed' : 'denied',
     reason: result.reason,
+    scanId,
   });
-  return result;
+  return { ...result, auditId };
 }

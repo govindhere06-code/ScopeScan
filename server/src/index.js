@@ -3,6 +3,7 @@ import { createTriageQueue } from './ai/queue.js';
 import { createApp } from './app.js';
 import { defaultDbPath, openDb } from './db.js';
 import { createScanQueue, DEFAULT_TIMEOUT_MS, recoverScans } from './jobs.js';
+import { findBrowser, htmlToPdf } from './report/pdf.js';
 
 // Hard-coded on purpose: ScopeScan must never be reachable from the network (no 0.0.0.0).
 const HOST = '127.0.0.1';
@@ -37,11 +38,15 @@ const triage = ai ? createTriageQueue({ db, chat: createOllamaChat(ai) }) : null
 triage?.resume();
 const queue = createScanQueue({ db, concurrency, timeoutMs, onFinished: (scanId) => triage?.enqueue(scanId) });
 
-const server = createApp({ db, allowedOrigins, queue, triage }).listen(PORT, HOST, () => {
+const browser = findBrowser();
+const renderPdf = browser ? (html) => htmlToPdf(html, { browser }) : null;
+
+const server = createApp({ db, allowedOrigins, queue, triage, renderPdf }).listen(PORT, HOST, () => {
   console.log(`ScopeScan API listening on http://${HOST}:${PORT}`);
   console.log(`Database: ${dbPath}`);
   console.log(`Scans: ${queue.limit} at a time, time limit ${timeoutMs / 60_000} minutes each`);
   console.log(ai ? `AI triage: ${ai.model} at ${ai.url}` : 'AI triage: off');
+  console.log(browser ? `PDF reports: printed with ${browser}` : 'PDF reports: off (no Edge or Chrome found; set REPORT_BROWSER)');
 });
 
 // Ctrl+C: don't leave scanners running with nobody to collect their results.

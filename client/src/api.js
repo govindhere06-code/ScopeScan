@@ -27,6 +27,16 @@ export const api = {
   getScan: (id) => request(`/scans/${id}`).then(unwrap),
   cancelScan: (id) => request(`/scans/${id}/cancel`, { method: 'POST', body: {} }).then(unwrap),
   triageScan: (id) => request(`/scans/${id}/triage`, { method: 'POST', body: {} }).then(unwrap),
+  // The PDF report, as a Blob. Not through request(): the answer is a file, not JSON.
+  scanReport: async (id) => {
+    const res = await fetch(`/api/scans/${id}/report`, {
+      method: 'POST',
+      headers: { 'X-ScopeScan': '1', 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!res.ok) unwrap({ ok: false, status: res.status, data: await res.json().catch(() => null) });
+    return res.blob();
+  },
   // A denial is a normal answer (HTTP 403), not an error.
   checkScope: async (target) => {
     const res = await request('/scope/check', { method: 'POST', body: { target } });

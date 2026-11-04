@@ -83,8 +83,9 @@ export async function runNucleiScan({ target }, options = {}) {
   const proxy = await startScopeProxy(target);
   try {
     const version = await getVersion(options);
-    const result = interpretRun(await run(nucleiBinary(), buildScanArgs(target.url, proxy.url), options), target);
-    return { ...result, version, scope: proxy.stats(), durationMs: Date.now() - started };
+    const command = [nucleiBinary(), ...buildScanArgs(target.url, proxy.url)];
+    const result = interpretRun(await run(command[0], command.slice(1), options), target);
+    return { ...result, version, command, scope: proxy.stats(), durationMs: Date.now() - started };
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
     return { ...notFound('nuclei', 'NUCLEI_PATH', started), scope: proxy.stats() };

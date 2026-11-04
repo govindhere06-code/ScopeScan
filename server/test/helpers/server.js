@@ -17,8 +17,8 @@ const NO_SCANNERS = { nmap: refuse, ffuf: refuse, nuclei: refuse };
 
 // Starts the app on a random port with a fresh in-memory database. `queue` options
 // (scanners, timeoutMs, concurrency, ...) go to the scan queue. `chat` (a fake model) turns
-// AI triage on.
-export async function startApp({ queue: queueOptions = {}, chat = null } = {}) {
+// AI triage on. `renderPdf` (a fake browser) turns PDF reports on.
+export async function startApp({ queue: queueOptions = {}, chat = null, renderPdf = null } = {}) {
   const db = openDb(':memory:');
   const triage = chat ? createTriageQueue({ db, chat }) : null;
   const queue = createScanQueue({
@@ -27,7 +27,7 @@ export async function startApp({ queue: queueOptions = {}, chat = null } = {}) {
     onFinished: (scanId) => triage?.enqueue(scanId),
     ...queueOptions,
   });
-  const server = createApp({ db, allowedOrigins: [ORIGIN], queue, triage }).listen(0, '127.0.0.1');
+  const server = createApp({ db, allowedOrigins: [ORIGIN], queue, triage, renderPdf }).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address();
 
@@ -38,7 +38,10 @@ export async function startApp({ queue: queueOptions = {}, chat = null } = {}) {
       const req = http.request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve({ status: res.statusCode, body: data ? JSON.parse(data) : null }));
+        res.on('end', () => {
+          const json = /json/.test(res.headers['content-type'] ?? '');
+          resolve({ status: res.statusCode, headers: res.headers, body: data ? (json ? JSON.parse(data) : data) : null });
+        });
       });
       req.on('error', reject);
       if (payload !== undefined) req.write(payload);

@@ -19,7 +19,7 @@ describe('server start after a crash', () => {
   it('marks scans that were running or waiting as failed', async () => {
     const db = openDb(':memory:');
     const running = createScan(db, { target, tools: ['nmap', 'ffuf'] });
-    markScanRunning(db, running, '3000');
+    markScanRunning(db, running, { id: 1, host: '127.0.0.1', ports: '3000' });
     markToolRunning(db, running, 'nmap');
     const waiting = createScan(db, { target, tools: ['nuclei'] });
 

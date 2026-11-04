@@ -194,7 +194,12 @@ th {
 .mono {
   font-family: var(--mono);
   font-size: 13px;
-  word-break: break-all;
+  /* Long URLs wrap only when they can't fit; short values ("nuclei") never break mid-word. */
+  overflow-wrap: break-word;
+}
+
+.nowrap {
+  white-space: nowrap;
 }
 
 .pill {
