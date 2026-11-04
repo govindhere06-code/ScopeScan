@@ -23,12 +23,14 @@ function formatLimit(ms) {
 
 // Scans run in the background, in the order they were requested. The queue itself is the
 // `scans` table (status 'queued'), so the history always shows exactly what is waiting.
+// `onFinished(scanId)` is called when a scan's tools are done (used to start AI triage).
 export function createScanQueue({
   db,
   scanners = DEFAULT_SCANNERS,
   concurrency = 1,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxQueued = MAX_QUEUED,
+  onFinished = () => {},
 }) {
   const limit = Math.min(Math.max(1, Math.trunc(concurrency) || 1), MAX_CONCURRENCY);
   const running = new Map(); // scan id -> { controller, key }
@@ -141,6 +143,7 @@ export function createScanQueue({
       decision: status,
       reason: `scan #${scan.id}${error ? `: ${error}` : ''}`,
     });
+    onFinished(scan.id);
   }
 
   // Returns 'cancelled' (it never started), 'stopping' (its tool is being killed),

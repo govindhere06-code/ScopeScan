@@ -31,7 +31,7 @@ export default function App() {
     refresh();
   }, [refresh]);
 
-  const anyActive = scans.some((s) => isActive(s.status));
+  const anyActive = scans.some((s) => isActive(s.status) || isActive(s.triage?.status));
   useEffect(() => {
     if (!anyActive) return undefined;
     const timer = setInterval(refresh, POLL_MS);
@@ -240,9 +240,16 @@ function elapsed(startedAt, finishedAt, now) {
   return (finishedAt ? Date.parse(finishedAt) : now) - Date.parse(startedAt);
 }
 
-function bySeverityThenTool(a, b) {
+// Once the AI has looked at a finding, its severity is the one to rank by.
+const aiDone = (f) => f.triage?.status === 'done';
+const effectiveSeverity = (f) => (aiDone(f) ? f.triage.severity : f.severity);
+const flaggedFalsePositive = (f) => aiDone(f) && f.triage.falsePositive;
+
+// Likely false positives go last but stay in the list: the AI flags, it never removes.
+function byRank(a, b) {
   return (
-    SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
+    flaggedFalsePositive(a) - flaggedFalsePositive(b) ||
+    SEVERITY_ORDER.indexOf(effectiveSeverity(a)) - SEVERITY_ORDER.indexOf(effectiveSeverity(b)) ||
     TOOLS.findIndex((t) => t.id === a.tool) - TOOLS.findIndex((t) => t.id === b.tool)
   );
 }
@@ -387,7 +394,14 @@ function ScanDetail({ summary, onChanged }) {
   const [error, setError] = useState(null);
   const active = isActive(summary.status);
   const now = useNow(active);
-  const progress = [summary.id, summary.status, summary.findingCount, ...summary.tools.map((t) => t.status)].join();
+  const progress = [
+    summary.id,
+    summary.status,
+    summary.findingCount,
+    ...summary.tools.map((t) => t.status),
+    summary.triage?.status,
+    summary.triage?.done,
+  ].join();
 
   useEffect(() => {
     let current = true;
@@ -452,8 +466,68 @@ function ScanDetail({ summary, onChanged }) {
           <ToolResult key={r.tool} result={r} now={now} />
         ))}
       </div>
+      {!active && <TriageBanner scan={scan} onChanged={onChanged} />}
       <FindingsTable key={scan.id} results={scan.results} />
     </div>
+  );
+}
+
+function TriageBanner({ scan, onChanged }) {
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const t = scan.triage;
+  const findingCount = scan.results.reduce((n, r) => n + r.findings.length, 0);
+  if (findingCount === 0) return null;
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.triageScan(scan.id);
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const button = (label) => (
+    <button type="button" className="link" onClick={run} disabled={busy}>
+      {label}
+    </button>
+  );
+  let text;
+  let tone = '';
+  if (!t) text = <>Not looked at by the AI yet. {button('Run AI triage')}</>;
+  else if (t.status === 'queued') text = <>AI triage ({t.model}): waiting for another scan's triage to finish.</>;
+  else if (t.status === 'running') {
+    text = (
+      <>
+        AI triage ({t.model}): {t.done} of {t.total} findings looked at…
+      </>
+    );
+  } else if (t.status === 'failed') {
+    tone = 'error';
+    text = (
+      <>
+        AI triage failed after {t.done} of {t.total} findings: {t.error} {button('Try again')}
+      </>
+    );
+  } else {
+    text = (
+      <>
+        AI triage ({t.model}): {t.flagged} of {t.total} flagged as likely false positives (listed last, not removed)
+        {t.injections > 0 && <>, {t.injections} with possible prompt injection (AI verdict not applied)</>}
+        {t.error && <>; {t.error}</>}. Click a finding for the explanation and fix. {button('Run again')}
+      </>
+    );
+  }
+  return (
+    <>
+      <p className={`banner ${tone}`}>{text}</p>
+      {error && <p className="form-error">{error}</p>}
+    </>
   );
 }
 
@@ -461,7 +535,7 @@ function FindingsTable({ results }) {
   const [selected, setSelected] = useState(null);
   const [toolFilter, setToolFilter] = useState('all');
 
-  const allFindings = results.flatMap((r) => r.findings).sort(bySeverityThenTool);
+  const allFindings = results.flatMap((r) => r.findings).sort(byRank);
   if (allFindings.length === 0) return null;
   const findings = toolFilter === 'all' ? allFindings : allFindings.filter((f) => f.tool === toolFilter);
   const open = findings.find((f) => f.id === selected);
@@ -499,14 +573,20 @@ function FindingsTable({ results }) {
             {findings.map((f) => (
               <tr
                 key={f.id}
-                className={`clickable ${selected === f.id ? 'selected' : ''}`}
+                className={`clickable ${selected === f.id ? 'selected' : ''} ${flaggedFalsePositive(f) ? 'flagged' : ''}`}
                 onClick={() => setSelected(selected === f.id ? null : f.id)}
               >
                 <td>
-                  <span className={`pill sev-${f.severity}`}>{f.severity}</span>
+                  <span className={`pill sev-${effectiveSeverity(f)}`}>{effectiveSeverity(f)}</span>
+                  {effectiveSeverity(f) !== f.severity && <div className="was">tool: {f.severity}</div>}
                 </td>
                 <td className="mono">{f.tool}</td>
-                <td>{f.title}</td>
+                <td>
+                  {f.title}
+                  {flaggedFalsePositive(f) && <span className="pill flag">likely false positive</span>}
+                  {f.triage?.injectionSuspected && <span className="pill flag danger">possible prompt injection</span>}
+                  {f.triage?.status === 'failed' && <span className="pill flag muted">no AI answer</span>}
+                </td>
                 <td className="mono">{f.location}</td>
                 <td className="detail">{f.detail}</td>
               </tr>
@@ -516,6 +596,7 @@ function FindingsTable({ results }) {
       </div>
       {open && (
         <>
+          {open.triage && <AiOpinion finding={open} />}
           <p className="meta">
             Raw {open.tool} output for {open.title} (click the row again to close):
           </p>
@@ -523,6 +604,56 @@ function FindingsTable({ results }) {
         </>
       )}
     </>
+  );
+}
+
+function AiOpinion({ finding }) {
+  const t = finding.triage;
+  if (t.status === 'failed') {
+    return <p className="banner error">The AI ({t.model}) gave no usable answer for this finding: {t.error}</p>;
+  }
+  return (
+    <div className="ai-opinion">
+      <p className="meta">
+        AI opinion ({t.model}) — a second opinion to check, not a verdict
+        {t.owasp && (
+          <>
+            {' '}
+            · <span className="mono">{t.owasp.id}</span> {t.owasp.name}
+          </>
+        )}
+        {t.cwe && (
+          <>
+            {' '}
+            · <span className="mono">{t.cwe}</span>
+          </>
+        )}
+      </p>
+      {t.injectionSuspected && (
+        <p className="banner error">
+          This finding's data contains text that reads like instructions to an AI, so the AI's verdict was not
+          applied: it said {t.modelSaid.falsePositive ? 'false positive' : 'real'}, {t.modelSaid.severity}. The
+          finding keeps the tool's severity. Check it yourself — and the target may be trying to fool scanners.
+        </p>
+      )}
+      {t.falsePositive && (
+        <p>
+          <strong>Likely false positive:</strong> {t.falsePositiveReason}
+        </p>
+      )}
+      {t.severityReason && t.severity !== finding.severity && (
+        <p>
+          <strong>
+            Severity {finding.severity} → {t.severity}:
+          </strong>{' '}
+          {t.severityReason}
+        </p>
+      )}
+      <p>{t.explanation}</p>
+      <p>
+        <strong>Fix:</strong> {t.fix}
+      </p>
+    </div>
   );
 }
 

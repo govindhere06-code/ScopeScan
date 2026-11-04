@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createTriageQueue } from '../../src/ai/queue.js';
 import { createApp } from '../../src/app.js';
 import { openDb } from '../../src/db.js';
 import { createScanQueue } from '../../src/jobs.js';
@@ -15,11 +16,18 @@ const refuse = () => {
 const NO_SCANNERS = { nmap: refuse, ffuf: refuse, nuclei: refuse };
 
 // Starts the app on a random port with a fresh in-memory database. `queue` options
-// (scanners, timeoutMs, concurrency, ...) go to the scan queue.
-export async function startApp({ queue: queueOptions = {} } = {}) {
+// (scanners, timeoutMs, concurrency, ...) go to the scan queue. `chat` (a fake model) turns
+// AI triage on.
+export async function startApp({ queue: queueOptions = {}, chat = null } = {}) {
   const db = openDb(':memory:');
-  const queue = createScanQueue({ db, scanners: NO_SCANNERS, ...queueOptions });
-  const server = createApp({ db, allowedOrigins: [ORIGIN], queue }).listen(0, '127.0.0.1');
+  const triage = chat ? createTriageQueue({ db, chat }) : null;
+  const queue = createScanQueue({
+    db,
+    scanners: NO_SCANNERS,
+    onFinished: (scanId) => triage?.enqueue(scanId),
+    ...queueOptions,
+  });
+  const server = createApp({ db, allowedOrigins: [ORIGIN], queue, triage }).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address();
 
@@ -40,5 +48,5 @@ export async function startApp({ queue: queueOptions = {} } = {}) {
 
   const fromPage = (method, path, body) => send(method, path, { body, headers: PAGE_HEADERS });
   const close = () => new Promise((resolve) => server.close(resolve));
-  return { db, queue, port, send, fromPage, close };
+  return { db, queue, triage, port, send, fromPage, close };
 }

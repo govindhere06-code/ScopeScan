@@ -69,6 +69,42 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS findings_by_scan ON findings (scan_id);
 
+  -- AI triage of a scan. status: queued -> running -> done | failed
+  CREATE TABLE IF NOT EXISTS scan_triage (
+    scan_id     INTEGER PRIMARY KEY REFERENCES scans(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    error       TEXT,
+    queued_at   TEXT NOT NULL,
+    started_at  TEXT,
+    finished_at TEXT
+  );
+
+  -- The model's opinion of one finding, kept next to it: the finding itself is never changed
+  -- or removed. model_* columns are what the model said; false_positive and severity are what
+  -- ScopeScan applies (the same, unless the finding's data looked like a prompt injection).
+  CREATE TABLE IF NOT EXISTS finding_triage (
+    finding_id            INTEGER PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+    scan_id               INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    status                TEXT NOT NULL,   -- done | failed
+    error                 TEXT,
+    model_false_positive  INTEGER,
+    false_positive_reason TEXT,
+    model_severity        TEXT,
+    severity_reason       TEXT,
+    explanation           TEXT,
+    fix                   TEXT,
+    owasp                 TEXT,
+    cwe                   TEXT,
+    injection_suspected   INTEGER NOT NULL DEFAULT 0,
+    false_positive        INTEGER,
+    severity              TEXT,
+    model                 TEXT NOT NULL,
+    duration_ms           INTEGER,
+    created_at            TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS finding_triage_by_scan ON finding_triage (scan_id);
+
   -- Scanner processes that are running right now. If the server dies, these are the
   -- processes it may have left behind; the next start checks for them and kills them.
   CREATE TABLE IF NOT EXISTS scan_processes (

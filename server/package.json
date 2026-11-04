@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
     "dev": "node --watch --env-file-if-exists=.env src/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "eval": "node --env-file-if-exists=.env scripts/eval-triage.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

@@ -26,6 +26,7 @@ export const api = {
   listScans: () => request('/scans').then(unwrap),
   getScan: (id) => request(`/scans/${id}`).then(unwrap),
   cancelScan: (id) => request(`/scans/${id}/cancel`, { method: 'POST', body: {} }).then(unwrap),
+  triageScan: (id) => request(`/scans/${id}/triage`, { method: 'POST', body: {} }).then(unwrap),
   // A denial is a normal answer (HTTP 403), not an error.
   checkScope: async (target) => {
     const res = await request('/scope/check', { method: 'POST', body: { target } });

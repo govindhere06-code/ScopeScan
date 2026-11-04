@@ -1,3 +1,5 @@
+import { createOllamaChat, ollamaConfig } from './ai/ollama.js';
+import { createTriageQueue } from './ai/queue.js';
 import { createApp } from './app.js';
 import { defaultDbPath, openDb } from './db.js';
 import { createScanQueue, DEFAULT_TIMEOUT_MS, recoverScans } from './jobs.js';
@@ -21,24 +23,32 @@ function positiveNumber(name, fallback) {
 
 const timeoutMs = positiveNumber('SCAN_TIMEOUT_MINUTES', DEFAULT_TIMEOUT_MS / 60_000) * 60_000;
 const concurrency = positiveNumber('SCAN_CONCURRENCY', 1);
+const aiEnabled = process.env.AI_TRIAGE !== 'off';
+// Checked before anything starts: a non-local model URL stops the server instead of
+// quietly sending scan data elsewhere.
+const ai = aiEnabled ? ollamaConfig() : null;
 
 const db = openDb(dbPath);
 const { killed, stale } = await recoverScans(db);
 if (stale.length) console.log(`Marked ${stale.length} interrupted scan(s) as failed`);
 if (killed.length) console.log(`Killed ${killed.length} scanner process(es) left over from the last run`);
 
-const queue = createScanQueue({ db, concurrency, timeoutMs });
+const triage = ai ? createTriageQueue({ db, chat: createOllamaChat(ai) }) : null;
+triage?.resume();
+const queue = createScanQueue({ db, concurrency, timeoutMs, onFinished: (scanId) => triage?.enqueue(scanId) });
 
-const server = createApp({ db, allowedOrigins, queue }).listen(PORT, HOST, () => {
+const server = createApp({ db, allowedOrigins, queue, triage }).listen(PORT, HOST, () => {
   console.log(`ScopeScan API listening on http://${HOST}:${PORT}`);
   console.log(`Database: ${dbPath}`);
   console.log(`Scans: ${queue.limit} at a time, time limit ${timeoutMs / 60_000} minutes each`);
+  console.log(ai ? `AI triage: ${ai.model} at ${ai.url}` : 'AI triage: off');
 });
 
 // Ctrl+C: don't leave scanners running with nobody to collect their results.
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     queue.shutdown();
+    triage?.shutdown();
     server.close();
     db.close();
     process.exit(0);

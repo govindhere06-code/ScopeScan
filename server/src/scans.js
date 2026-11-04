@@ -1,3 +1,5 @@
+import { findingTriageByFinding, scanTriageSummary } from './ai/store.js';
+
 // Scan history: every scan, each tool's run and every finding, kept in the database.
 
 export const ACTIVE = ['queued', 'running'];
@@ -124,7 +126,13 @@ export function listScans(db, limit = 50) {
     .map((r) => {
       const counts = Object.fromEntries(severities.all(r.id).map((s) => [s.severity, s.n]));
       const findingCount = Object.values(counts).reduce((a, b) => a + b, 0);
-      return { ...scanRow(r), tools: tools.all(r.id), findingCount, severityCounts: counts };
+      return {
+        ...scanRow(r),
+        tools: tools.all(r.id),
+        findingCount,
+        severityCounts: counts,
+        triage: scanTriageSummary(db, r.id),
+      };
     });
 }
 
@@ -133,6 +141,7 @@ export function getScan(db, id) {
   const r = db.prepare('SELECT * FROM scans WHERE id = ?').get(id);
   if (!r) return null;
   const findings = db.prepare('SELECT * FROM findings WHERE scan_id = ? AND tool = ? ORDER BY id');
+  const triage = findingTriageByFinding(db, id);
   const results = db
     .prepare('SELECT * FROM scan_tools WHERE scan_id = ? ORDER BY position')
     .all(id)
@@ -156,7 +165,8 @@ export function getScan(db, id) {
         detail: f.detail,
         ref: f.ref,
         raw: JSON.parse(f.raw),
+        triage: triage.get(f.id) ?? null,
       })),
     }));
-  return { ...scanRow(r), results };
+  return { ...scanRow(r), results, triage: scanTriageSummary(db, id) };
 }

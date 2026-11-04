@@ -2,7 +2,7 @@ import express from 'express';
 import { addTarget, isAllowed, listTargets, removeTarget } from './allowlist.js';
 import { listEvents, logEvent } from './audit.js';
 import { QueueFullError } from './jobs.js';
-import { getScan, listScans } from './scans.js';
+import { ACTIVE, getScan, listScans, scanStatus } from './scans.js';
 import { ScopeError } from './scope.js';
 import { requireLocalHost, requireSameSite } from './security.js';
 
@@ -23,8 +23,9 @@ function scanId(req) {
   return id;
 }
 
-// `queue` (see jobs.js) runs the scans; tests give it fake scanners.
-export function createApp({ db, allowedOrigins, queue }) {
+// `queue` (see jobs.js) runs the scans; tests give it fake scanners. `triage` (see ai/queue.js)
+// is null when AI triage is turned off.
+export function createApp({ db, allowedOrigins, queue, triage = null }) {
   const app = express();
   app.disable('x-powered-by');
 
@@ -76,6 +77,19 @@ export function createApp({ db, allowedOrigins, queue }) {
     if (outcome === null) return res.status(404).json({ error: 'no such scan' });
     if (outcome === 'finished') return res.status(409).json({ error: 'this scan has already finished' });
     res.json(getScan(db, id));
+  });
+
+  // Sends a finished scan to the local model again, e.g. after changing the model or prompt.
+  // Earlier opinions are replaced; the findings themselves never change.
+  app.post('/api/scans/:id/triage', (req, res) => {
+    const id = scanId(req);
+    if (!triage) return res.status(503).json({ error: 'AI triage is turned off (AI_TRIAGE=off in server/.env)' });
+    const status = scanStatus(db, id);
+    if (status === null) return res.status(404).json({ error: 'no such scan' });
+    if (ACTIVE.includes(status)) return res.status(409).json({ error: 'wait for the scan to finish first' });
+    if (triage.busyWith(id)) return res.status(409).json({ error: 'AI triage of this scan is already under way' });
+    if (!triage.enqueue(id)) return res.status(409).json({ error: 'this scan has no findings to triage' });
+    res.status(202).json(getScan(db, id));
   });
 
   app.get('/api/audit', (req, res) => res.json(listEvents(db)));

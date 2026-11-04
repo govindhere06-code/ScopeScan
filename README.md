@@ -2,7 +2,7 @@
 
 A web platform that runs open-source security scanners (Nuclei, nmap, ffuf) against targets **you are authorized to test**, normalizes their results, and uses a local LLM to triage and explain the findings.
 
-> **Status:** early development — scope allowlist, nmap/ffuf/Nuclei scanning, background scans and scan history work end to end; AI triage is next. See [Roadmap](#roadmap).
+> **Status:** early development — scope allowlist, nmap/ffuf/Nuclei scanning, background scans, scan history and local AI triage work end to end; PDF reports are next. See [Roadmap](#roadmap).
 
 ## Authorized targets only
 
@@ -25,7 +25,7 @@ Scanning systems you don't own or don't have written permission to test is illeg
 - [x] **2 · Nuclei integration**
 - [x] **3 · nmap and ffuf behind a shared interface**
 - [x] **4 · Scan history + background jobs**
-- [ ] **5 · AI triage layer (local LLM)**
+- [x] **5 · AI triage layer (local LLM)**
 - [ ] **6 · Report generation + polish**
 
 ## Tech stack
@@ -60,7 +60,8 @@ npm --prefix client install
 
 npm run server    # API on http://127.0.0.1:4000
 npm run client    # web page on http://127.0.0.1:5173 (in a second terminal)
-npm test          # scope and security tests
+npm test          # scope, security, job and triage tests
+npm run eval      # score the AI triage against the labelled eval set (needs Ollama)
 ```
 
 Optional settings go in `server/.env` (see `server/.env.example`). By default the database is stored in `%LOCALAPPDATA%\ScopeScan\scopescan.db`.
@@ -78,6 +79,16 @@ Every tool's output is converted into one finding format (`tool`, `type`, `sever
 - **The allowlist is checked twice:** when the scan is requested and again when it starts, in case the entry was removed or narrowed while the scan waited.
 - **Status:** queued → running → done, failed, timed out or cancelled. A scan that runs past the time limit has its tool killed and is marked timed out, and a cancelled one is killed the same way. Whatever a killed tool had already found is kept, labelled with the reason it stopped.
 - **No orphaned scanners.** Every scanner process is recorded while it runs. Ctrl+C kills them with the server; after a crash, the next start kills any that are still running (only if the process ID still belongs to the same program) and marks the interrupted scans failed.
+
+## How AI triage works
+
+After a scan finishes, each finding is sent to a local model ([Ollama](https://ollama.com), `llama3.1:8b` by default) for a second opinion: is it a likely false positive, what severity it deserves, a plain-English explanation, a fix, and an OWASP Top 10 (2025) category and CWE. Install Ollama, run `ollama pull llama3.1:8b`, and ScopeScan uses it automatically; `AI_TRIAGE=off` in `server/.env` turns it off.
+
+- **Scan data stays on this machine.** The model URL must point at this computer; anything else stops the server from starting.
+- **It never removes anything.** A likely false positive is flagged and listed last, with the reason. The finding and the tool's original output stay as they were, next to the model's opinion.
+- **Anchored to the tool.** The model starts from the scanner's severity, and a different severity is only accepted with a stated reason.
+- **Scan output is treated as hostile.** It reaches the model fenced off as untrusted data, without full response bodies, and the reply must match a strict JSON schema (one retry, then the finding is marked "no AI answer"). The model can still be talked round: in testing, one planted "ignore previous instructions" line was enough. So if a finding's data contains instruction-like text, the model's verdict is not applied, and the finding is flagged as a possible prompt injection for a person to check.
+- **Measured.** `npm run eval` runs the model over a labelled set of real findings from the lab (kept out of git, in `lab/`) and reports how often it agrees on false positives and severity, including findings with planted injections. First measurement with `llama3.1:8b` on 41 Juice Shop findings: false-positive calls agree 90% of the time (7 of 9 false positives caught, 2 of 32 real findings wrongly flagged), severity agrees exactly 66% of the time and within one level 76%. Its main weakness is rating missing security headers too high. The model on its own followed 3 of 4 planted instructions; with the guard, none got through. The labels are a first pass still to be reviewed by hand, and the prompt was adjusted on the same set, so treat these numbers as optimistic.
 
 ## How the scope gate works
 
