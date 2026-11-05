@@ -25,6 +25,7 @@ export const api = {
   startScan: (target, tools) => request('/scans', { method: 'POST', body: { target, tools } }).then(unwrap),
   listScans: () => request('/scans').then(unwrap),
   getScan: (id) => request(`/scans/${id}`).then(unwrap),
+  getComparison: (id) => request(`/scans/${id}/comparison`).then(unwrap),
   cancelScan: (id) => request(`/scans/${id}/cancel`, { method: 'POST', body: {} }).then(unwrap),
   triageScan: (id) => request(`/scans/${id}/triage`, { method: 'POST', body: {} }).then(unwrap),
   // The PDF report, as a Blob. Not through request(): the answer is a file, not JSON.

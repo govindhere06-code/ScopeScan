@@ -171,8 +171,37 @@ function summary(r) {
   ${incomplete}
   ${topTable}
   ${countTable}
+  ${changes(r)}
   <p class="note">This summary is assembled from the scan data by ScopeScan; it is not written by the AI.</p>
 </section>`;
+}
+
+// Since the previous scan of the same target. "No longer found" is not "fixed": the tool may just
+// not have reached it this time, so the report says which.
+function changes(r) {
+  const c = r.comparison;
+  if (!c) return '';
+  const newCount = r.findings.filter((f) => f.isNew).length;
+  const gone = c.gone.filter((g) => !g.flagged);
+  const goneFlagged = c.gone.length - gone.length;
+  const goneTable = gone.length
+    ? `<table class="grid">
+        <thead><tr><th>Severity</th><th>No longer found</th><th>Tool</th><th>Location</th></tr></thead>
+        <tbody>${gone
+          .map((g) => `<tr><td>${badge(g.severity)}</td><td>${esc(g.heading)}</td><td>${esc(g.tool)}</td><td class="mono wrap">${esc(g.location)}</td></tr>`)
+          .join('')}</tbody>
+      </table>`
+    : '';
+  const skipped = c.notCompared.length
+    ? ` Not compared: ${c.notCompared.map((n) => `${esc(n.tool)} (${esc(n.reason)})`).join(', ')}.`
+    : '';
+  return `<h3>Changes since scan #${c.previous.id}</h3>
+    <p>Compared with scan #${c.previous.id} of the same target (${esc(day(c.previous.startedAt))}), for
+    ${esc(list(c.compared))}: ${plural(newCount, 'new finding')} (marked “new” in section 4),
+    ${plural(gone.length, 'finding')} no longer found${goneFlagged ? ` (plus ${goneFlagged} that had been flagged as likely false positives)` : ''},
+    and ${c.unchanged} unchanged.${skipped}</p>
+    ${goneTable}
+    ${gone.length ? '<p class="note">A finding that is no longer found may have been fixed, or the tool may not have reached it this time; check before treating it as fixed.</p>' : ''}`;
 }
 
 function authorization(r) {
@@ -197,6 +226,9 @@ function authorization(r) {
         .join('')
     : '';
   const nmap = r.tools.find((t) => t.tool === 'nmap');
+  const nmapText = nmap
+    ? `<li><b>nmap</b> was limited to port${String(auth.ports).includes(',') ? 's' : ''} <span class="mono">${esc(auth.ports ?? scan.port)}</span> of <span class="mono">${esc(scan.host)}</span>.</li>`
+    : '';
 
   const events = auth.events
     .map(
@@ -220,11 +252,7 @@ function authorization(r) {
     ${entry}
   </table>
 
-  <h3>How the scope was enforced</h3>
-  <ul>
-    ${proxyText}
-    ${nmap ? `<li><b>nmap</b> was limited to port${String(auth.ports).includes(',') ? 's' : ''} <span class="mono">${esc(auth.ports ?? scan.port)}</span> of <span class="mono">${esc(scan.host)}</span>.</li>` : ''}
-  </ul>
+  ${proxyText || nmapText ? `<h3>How the scope was enforced</h3><ul>${proxyText}${nmapText}</ul>` : ''}
   ${proxied.length ? '<p class="note">ffuf and nuclei sent all their traffic through ScopeScan’s scope proxy, which forwards a request only if it goes to the allowed host and port. Blocked requests are templates and redirects trying to reach other hosts or ports.</p>' : ''}
 
   <h3>Audit record</h3>
@@ -357,7 +385,7 @@ function findingsSection(r) {
           .map(
             (f) => `<tr><td class="mono nowrap">${f.number}</td><td>${badge(f.severityApplied)}${
               f.severityApplied !== f.severity ? `<div class="was">tool: ${esc(f.severity)}</div>` : ''
-            }</td><td>${esc(f.heading)}</td><td>${esc(f.tool)}</td><td class="mono wrap">${esc(f.where)}</td></tr>`,
+            }</td><td>${esc(f.heading)}${f.isNew ? ' <span class="tag-new">new</span>' : ''}</td><td>${esc(f.tool)}</td><td class="mono wrap">${esc(f.where)}</td></tr>`,
           )
           .join('')}</tbody>
       </table>`
@@ -444,6 +472,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--soft); b
 .sev-low, .bar-low { background: #f2c94c; color: #3d2f00; }
 .sev-info, .bar-info { background: #d6e2f5; color: #1f3d7a; }
 .sev-unknown, .bar-unknown { background: #e3e5e8; color: #444; }
+.tag-new { font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); border: 1px solid var(--accent); border-radius: 3pt; padding: 0 3pt; margin-left: 3pt; }
 .was { font-size: 7.5pt; color: var(--muted); margin-top: 1pt; }
 .callout { border-radius: 4pt; padding: 7pt 9pt; margin: 8pt 0; }
 .callout.warn { background: #fff4e0; border-left: 3pt solid #e8870e; }

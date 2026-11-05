@@ -3,6 +3,7 @@
 import path from 'node:path';
 import { similarResponses } from '../ai/triage.js';
 import { scanEvents } from '../audit.js';
+import { compareScans } from '../compare.js';
 import { getScan } from '../scans.js';
 
 export const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info', 'unknown'];
@@ -82,11 +83,14 @@ export function reportData(db, id, { now = new Date() } = {}) {
   if (!scan) return null;
   const all = scan.results.flatMap((r) => r.findings);
   const ranked = [...all].sort(byRank);
+  const comparison = compareScans(db, id);
+  const newIds = new Set(comparison.newIds);
 
   const findings = ranked.map((f, i) => ({
     ...f,
     number: `F-${String(i + 1).padStart(2, '0')}`,
     heading: headingOf(f),
+    isNew: comparison.compared.includes(f.tool) && newIds.has(f.id),
     // Short form for tables: every web finding is on the scan's target.
     where: f.location?.startsWith(scan.target) ? f.location.slice(scan.target.length) || '/' : f.location,
     severityApplied: severityOf(f),
@@ -121,6 +125,9 @@ export function reportData(db, id, { now = new Date() } = {}) {
     findings,
     counts,
     flaggedCount: findings.filter((f) => f.flagged).length,
+    comparison: comparison.compared.length
+      ? { ...comparison, gone: comparison.gone.map((g) => ({ ...g, heading: g.matcher ? `${g.title}: ${g.matcher}` : g.title })) }
+      : null,
     triage: scan.triage,
     authorization: {
       entry: scan.allowlistEntry,

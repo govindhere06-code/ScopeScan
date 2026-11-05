@@ -397,6 +397,7 @@ function ScanHistory({ scans, selectedId, onSelect }) {
 // the full scan is fetched again whenever its row shows progress.
 function ScanDetail({ summary, onChanged }) {
   const [scan, setScan] = useState(null);
+  const [comparison, setComparison] = useState(null);
   const [error, setError] = useState(null);
   const active = isActive(summary.status);
   const now = useNow(active);
@@ -411,11 +412,11 @@ function ScanDetail({ summary, onChanged }) {
 
   useEffect(() => {
     let current = true;
-    api
-      .getScan(summary.id)
-      .then((s) => {
+    Promise.all([api.getScan(summary.id), active ? null : api.getComparison(summary.id)])
+      .then(([s, c]) => {
         if (!current) return;
         setScan(s);
+        setComparison(c);
         setError(null);
       })
       .catch((err) => current && setError(err.message));
@@ -475,7 +476,48 @@ function ScanDetail({ summary, onChanged }) {
         ))}
       </div>
       {!active && <TriageBanner scan={scan} onChanged={onChanged} />}
-      <FindingsTable key={scan.id} results={scan.results} target={scan.target} />
+      {!active && comparison?.compared.length > 0 && <Comparison comparison={comparison} target={scan.target} />}
+      <FindingsTable
+        key={scan.id}
+        results={scan.results}
+        target={scan.target}
+        newIds={new Set(comparison?.compared.length ? comparison.newIds : [])}
+      />
+    </div>
+  );
+}
+
+// What changed since the previous scan of the same target. "No longer found" is worded carefully:
+// the tool may simply not have reached it this time.
+function Comparison({ comparison: c, target }) {
+  const gone = c.gone.filter((g) => !g.flagged);
+  return (
+    <div className="banner comparison">
+      <p>
+        Compared with scan #{c.previous.id} ({new Date(c.previous.startedAt).toLocaleDateString()}) for{' '}
+        {c.compared.join(', ')}: <strong>{plural(c.newIds.length, 'new finding')}</strong>,{' '}
+        <strong>{plural(gone.length, 'finding')} no longer found</strong>, {c.unchanged} unchanged.
+        {c.notCompared.length > 0 && (
+          <> Not compared: {c.notCompared.map((n) => `${n.tool} (${n.reason})`).join(', ')}.</>
+        )}
+      </p>
+      {gone.length > 0 && (
+        <details>
+          <summary>No longer found ({gone.length})</summary>
+          <ul className="gone">
+            {gone.map((g) => (
+              <li key={g.id}>
+                <span className={`pill sev-${g.severity}`}>{g.severity}</span> {g.title}
+                {g.matcher && <>: {g.matcher}</>} <span className="mono">{shortLocation(g.location, target)}</span>{' '}
+                <span className="meta">({g.tool})</span>
+              </li>
+            ))}
+          </ul>
+          <p className="meta">
+            It may have been fixed, or the tool may not have reached it this time. Check before treating it as fixed.
+          </p>
+        </details>
+      )}
     </div>
   );
 }
@@ -575,7 +617,7 @@ function shortLocation(location, target) {
   return location?.startsWith(target) ? location.slice(target.length) || '/' : location;
 }
 
-function FindingsTable({ results, target }) {
+function FindingsTable({ results, target, newIds }) {
   const [selected, setSelected] = useState(null);
   const [toolFilter, setToolFilter] = useState('all');
 
@@ -627,6 +669,7 @@ function FindingsTable({ results, target }) {
                 <td className="mono nowrap">{f.tool}</td>
                 <td>
                   {f.title}
+                  {newIds.has(f.id) && <span className="pill flag new">new</span>}
                   {flaggedFalsePositive(f) && <span className="pill flag">likely false positive</span>}
                   {f.triage?.injectionSuspected && <span className="pill flag danger">possible prompt injection</span>}
                   {f.triage?.status === 'failed' && <span className="pill flag muted">no AI answer</span>}

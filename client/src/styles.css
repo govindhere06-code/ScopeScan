@@ -424,6 +424,28 @@ td .was {
   color: var(--err-text);
 }
 
+.pill.flag.new {
+  background: var(--low-bg);
+  color: var(--low-text);
+}
+
+.banner.comparison p {
+  margin: 0;
+}
+
+.banner.comparison details {
+  margin-top: 8px;
+}
+
+ul.gone {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+ul.gone li {
+  margin-bottom: 4px;
+}
+
 .pill.flag.muted {
   background: var(--border);
   color: var(--muted);

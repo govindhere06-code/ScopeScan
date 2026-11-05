@@ -1,6 +1,7 @@
 import express from 'express';
 import { addTarget, isAllowed, listTargets, removeTarget } from './allowlist.js';
 import { listEvents, logEvent } from './audit.js';
+import { compareScans } from './compare.js';
 import { QueueFullError } from './jobs.js';
 import { reportData } from './report/data.js';
 import { reportHtml } from './report/html.js';
@@ -73,6 +74,20 @@ export function createApp({ db, allowedOrigins, queue, triage = null, renderPdf 
     const scan = getScan(db, scanId(req));
     if (!scan) return res.status(404).json({ error: 'no such scan' });
     res.json(scan);
+  });
+
+  // "Did this get fixed?": what is new and what is no longer found since the previous scan of the
+  // same target (or the scan given as ?with=N).
+  app.get('/api/scans/:id/comparison', (req, res) => {
+    const id = scanId(req);
+    let withId = null;
+    if (req.query.with !== undefined) {
+      withId = Number(req.query.with);
+      if (!Number.isInteger(withId)) throw new ScopeError('invalid scan id to compare with');
+    }
+    const comparison = compareScans(db, id, withId);
+    if (!comparison) return res.status(404).json({ error: 'no such scan' });
+    res.json(comparison);
   });
 
   app.post('/api/scans/:id/cancel', (req, res) => {

@@ -15,6 +15,7 @@ Scanning systems you don't own or don't have written permission to test is illeg
 - **Scope allowlist** — default deny; targets are host + port scope, stored in canonical form, with an audit log of every decision
 - **Tool orchestration** — Nuclei, nmap and ffuf run as child processes and their output is normalized into one finding format
 - **Background scans and history** — scans run as queued jobs; every scan and its results are kept
+- **Scan comparison** — each scan is compared with the previous one of the same target: what is new, what is no longer found, what stayed
 - **AI triage** — a local model (Ollama) flags likely false positives, explains findings and suggests fixes; scan data never leaves the machine
 - **PDF reports** — one click: executive summary, scope and authorization record, methodology with tool versions and commands, findings with evidence and fixes, AI-written text marked as such
 
@@ -87,8 +88,27 @@ After a scan finishes, each finding is sent to a local model ([Ollama](https://o
 - **Scan data stays on this machine.** The model URL must point at this computer; anything else stops the server from starting.
 - **It never removes anything.** A likely false positive is flagged and listed last, with the reason. The finding and the tool's original output stay as they were, next to the model's opinion.
 - **Anchored to the tool.** The model starts from the scanner's severity, and a different severity is only accepted with a stated reason.
-- **Scan output is treated as hostile.** It reaches the model fenced off as untrusted data, without full response bodies, and the reply must match a strict JSON schema (one retry, then the finding is marked "no AI answer"). The model can still be talked round: in testing, one planted "ignore previous instructions" line was enough. So if a finding's data contains instruction-like text, the model's verdict is not applied, and the finding is flagged as a possible prompt injection for a person to check.
-- **Measured.** `npm run eval` runs the model over a labelled set of real findings from the lab (kept out of git, in `lab/`) and reports how often it agrees on false positives and severity, including findings with planted injections. First measurement with `llama3.1:8b` on 41 Juice Shop findings: false-positive calls agree 90% of the time (7 of 9 false positives caught, 2 of 32 real findings wrongly flagged), severity agrees exactly 66% of the time and within one level 76%. Its main weakness is rating missing security headers too high. The model on its own followed 3 of 4 planted instructions; with the guard, none got through. The labels are a first pass still to be reviewed by hand, and the prompt was adjusted on the same set, so treat these numbers as optimistic.
+- **Scan output is treated as hostile.** It reaches the model fenced off as untrusted data, without full response bodies, and the reply must match a strict JSON schema (one retry, then the finding is marked "no AI answer"). The model can still be talked round: in testing, one planted "ignore previous instructions" line was enough. So if a finding's data contains instruction-like text, the model's verdict is not applied, and the finding is flagged as a possible prompt injection for a person to check. That check is a list of phrasings, and it only catches phrasings it knows (see below): treat every AI verdict as a suggestion.
+- **Measured.** `npm run eval` runs the model over a labelled set of real findings from the lab (kept out of git, in `lab/`) and reports how often it agrees on false positives and severity, including findings with planted injections. `EVAL_DIR=../lab/eval-dvwa npm run eval` scores a second set. Results with `llama3.1:8b`:
+
+  | | Juice Shop, 41 findings | DVWA, 21 findings (held out) |
+  |---|---|---|
+  | False-positive calls agree | 90% | 76% |
+  | False positives caught | 7 of 9 | 0 of 2 |
+  | Real findings wrongly flagged | 2 of 32 | 3 of 19 |
+  | Severity agrees exactly | 66% | 62% |
+  | Severity within one level | 76% | 81% |
+  | Planted instructions stopped by the guard | 4 of 4 | 0 of 4 |
+
+  The prompt and the injection guard were tuned on the Juice Shop set, so those numbers are optimistic. The DVWA set was labelled before the model saw it, with the prompt left unchanged, and its planted instructions use new wording, in new places and in German. The guard caught none of them, and the model followed three: it turned a real cookie finding into a false positive and rated PHP detection critical. The model's main weaknesses are rating hardening issues (missing headers, cookie attributes) too high, and calling directories that ffuf only saw as a redirect false positives. The labels are mine, from evidence checked by hand in the lab, and are still to be reviewed.
+
+## Comparing scans ("did this get fixed?")
+
+A finished scan is compared with the previous finished scan of the same host and port. The page shows how many findings are new (tagged **new** in the list), how many are no longer found (with the list), and how many stayed; the PDF report has the same in its executive summary. `GET /api/scans/:id/comparison?with=N` compares with a chosen earlier scan instead.
+
+- **Same finding = same tool, same check, same place:** the tool, the finding type, the check's id (Nuclei template, ffuf path, nmap service), Nuclei's matcher name and the location. Values that change from run to run, such as response sizes or extracted versions, don't count.
+- **Only tools that completed in both scans are compared.** A tool that failed, timed out or wasn't run can't show that something went away, so its findings are neither "new" nor "no longer found".
+- **"No longer found" is not "fixed".** The tool may simply not have reached it this time; both the page and the report say so.
 
 ## The PDF report
 
